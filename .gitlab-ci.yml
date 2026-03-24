@@ -1,0 +1,276 @@
+# SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# GitLab CI for vauchi-ohttp-relay
+#
+# Minimal OHTTP forwarding proxy — no vauchi crate dependencies.
+#
+# Performance optimizations:
+#   - Self-hosted runners: sccache, persistent caches, load-balanced
+#   - Change-based rules: Jobs run only when relevant files change
+#   - Timeouts: Prevent runaway jobs from blocking runners
+#   - Interruptible: Auto-cancel on new commits (via templates)
+
+# Shared templates
+include:
+  - project: 'vauchi/scripts'
+    ref: main
+    file:
+      - '/ci-templates/rust-base.yml'
+      - '/ci-templates/security.yml'
+      - '/ci-templates/coverage.yml'
+      - '/ci-templates/mr-rules.yml'
+      - '/ci-templates/reuse.yml'
+      - '/ci-templates/release.yml'
+      - '/ci-templates/test-quality.yml'
+      - '/ci-templates/image-lint.yml'
+      - '/ci-templates/badges.yml'
+  - template: Security/Container-Scanning.gitlab-ci.yml
+
+stages:
+  - auto-tag
+  - lint
+  - test
+  - security
+  - build
+  - scan
+  - deploy
+
+variables:
+  CS_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+# ============================================================
+# Auto-Tag Stage
+# ============================================================
+
+auto-tag:version:
+  extends: .auto-tag
+
+# ============================================================
+# Lint Stage — Preflight Gate (change-based)
+# ============================================================
+
+lint:format:
+  extends: [.rust-runner-nocache, .lint-format, .validation-rust, .timeout-quick]
+  needs: []
+
+lint:clippy:
+  extends: [.rust-runner-readonly, .lint-clippy, .validation-rust, .timeout-quick]
+  needs: []
+
+lint:duplicates:
+  extends: [.rust-runner-nocache, .lint-duplicates-job, .timeout-quick]
+
+lint:machete:
+  extends: [.rust-runner-nocache, .lint-machete-job, .timeout-quick]
+
+lint:images:
+  extends: [.image-lint]
+
+# ============================================================
+# Test Stage (change-based, gated by lint)
+# ============================================================
+
+# MR: fast nextest (no coverage overhead)
+test:
+  extends: [.rust-runner, .validation-rust, .timeout-standard]
+  stage: test
+  needs:
+    - job: lint:format
+      optional: true
+  script:
+    - cargo nextest run --profile ci --all-targets
+  artifacts:
+    when: always
+    reports:
+      junit: target/nextest/ci/junit.xml
+    expire_in: 1 week
+
+# Main: full coverage with llvm-cov
+coverage:
+  extends: [.coverage-job, .rust-runner, .timeout-long]
+  before_script:
+    - !reference [.self-hosted, before_script]
+    - !reference [.git-credentials, before_script]
+    - rustup component add llvm-tools-preview 2>/dev/null || true
+  variables:
+    COVERAGE_REPO_LABEL: "ohttp-relay"
+
+# ============================================================
+# Security Stage (change-based, gated by lint, parallel with test)
+# ============================================================
+
+semgrep-sast:
+  tags: [docker]
+  needs:
+    - job: lint:format
+      optional: true
+    - job: lint:clippy
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        compare_to: refs/heads/$CI_DEFAULT_BRANCH
+        paths:
+          - "**/*.rs"
+          - ".gitlab-ci.yml"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+secret_detection:
+  tags: [docker]
+  needs:
+    - job: lint:format
+      optional: true
+    - job: lint:clippy
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+container_scanning:
+  stage: scan
+  needs: ["build:docker"]
+  tags: [docker]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      allow_failure: true
+
+security:audit:
+  extends: [.rust-runner-readonly, .security-audit-job]
+
+security:deny:
+  extends: [.rust-runner-readonly, .security-deny-job]
+
+security:vet:
+  extends: [.rust-runner-readonly, .security-vet-job]
+
+# ============================================================
+# Build Stage
+# ============================================================
+
+build:release:
+  extends: [.linux-runner, .timeout-standard]
+  stage: build
+  needs:
+    - job: test
+      optional: true
+    - job: lint:format
+      optional: true
+  script:
+    - cargo build --release
+  artifacts:
+    paths:
+      - target/release/vauchi-ohttp-relay
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
+build:docker:
+  extends: .timeout-standard
+  stage: build
+  tags: [docker]
+  image: docker:27
+  services:
+    - docker:dind
+  variables:
+    DOCKER_BUILDKIT: "1"
+  script:
+    - |
+      if [ -n "$CI_REGISTRY_PASSWORD" ]; then
+        echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+      fi
+    - BUILD_INFO="{\"sha\":\"$CI_COMMIT_SHA\",\"short_sha\":\"$CI_COMMIT_SHORT_SHA\",\"ref\":\"$CI_COMMIT_REF_NAME\",\"built\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"pipeline\":\"$CI_PIPELINE_URL\"}"
+    - docker build --build-arg BUILD_INFO="$BUILD_INFO" --cache-from $CI_REGISTRY_IMAGE:latest -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:latest
+    - |
+      if [ -n "$CI_REGISTRY_PASSWORD" ]; then
+        docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+        docker push $CI_REGISTRY_IMAGE:latest
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
+# ============================================================
+# Deploy Stage
+# ============================================================
+# Auto-triggers the centralized deploy pipeline in _private.
+# The _private pipeline has manual gate jobs — click "play" there.
+
+deploy:trigger:
+  stage: deploy
+  needs:
+    - job: build:docker
+  trigger:
+    project: vauchi/private
+    branch: main
+  variables:
+    DEPLOY_SERVICE: ohttp-relay
+    DEPLOY_IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ============================================================
+# Dev Tag Pipeline (lightweight — lint + test only)
+# ============================================================
+
+dev:verify:
+  extends: [.rust-runner-nocache, .dev-verify]
+  stage: lint
+  needs: []
+
+dev:lint:format:
+  extends: [.rust-runner-nocache, .dev-lint-format]
+
+dev:lint:clippy:
+  extends: [.rust-runner-readonly, .dev-lint-clippy]
+
+dev:test:
+  extends: [.rust-runner, .dev-test-nextest, .timeout-standard]
+
+# ============================================================
+# RC Tag Pipeline (full quality gate — no publish/deploy)
+# ============================================================
+
+rc:verify:
+  extends: [.rust-runner-nocache, .rc-verify]
+  stage: lint
+  needs: []
+
+rc:lint:format:
+  extends: [.rust-runner-nocache, .rc-lint-format]
+
+rc:lint:clippy:
+  extends: [.rust-runner-readonly, .rc-lint-clippy]
+
+rc:test:
+  extends: [.coverage-job, .rust-runner, .timeout-long]
+  needs:
+    - job: rc:lint:format
+      optional: true
+    - job: rc:lint:clippy
+      optional: true
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+-rc\.\d+$/
+  before_script:
+    - !reference [.self-hosted, before_script]
+    - !reference [.git-credentials, before_script]
+    - rustup component add llvm-tools-preview 2>/dev/null || true
+  variables:
+    COVERAGE_REPO_LABEL: "ohttp-relay"
+
+rc:security:audit:
+  extends: [.rust-runner-readonly, .rc-security-audit]
+
+# ============================================================
+# Deploy Stage — Badge Pages
+# ============================================================
+
+pages:
+  extends: .badges-pages

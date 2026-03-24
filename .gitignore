@@ -1,1 +1,25 @@
-/target
+# Rust
+/target/
+.cargo/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI local testing
+.gitlab-ci-local/
+
+# Secrets & credentials (never commit)
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+service-account*.json
