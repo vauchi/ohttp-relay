@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "vauchi-ohttp-relay"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Minimal OHTTP forwarding proxy for Vauchi relay"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+http-body-util = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
