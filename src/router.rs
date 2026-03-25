@@ -98,12 +98,22 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
         .get_ohttp_key(state.config.request_timeout)
         .await
     {
-        Ok(key_bytes) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/ohttp-keys")],
-            key_bytes,
-        )
-            .into_response(),
+        Ok(key_resp) => {
+            let mut response = (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/ohttp-keys")],
+                key_resp.body,
+            )
+                .into_response();
+            if let Some(fingerprint) = key_resp.key_fingerprint
+                && let Ok(value) = header::HeaderValue::from_str(&fingerprint)
+            {
+                response
+                    .headers_mut()
+                    .insert(header::HeaderName::from_static("key-fingerprint"), value);
+            }
+            response
+        }
         Err(e) => {
             warn!(error = %e, "upstream gateway error on key fetch");
             StatusCode::BAD_GATEWAY.into_response()
@@ -294,6 +304,111 @@ mod tests {
             resp.status(),
             StatusCode::BAD_GATEWAY,
             "key endpoint should return 502 when upstream is unreachable"
+        );
+    }
+
+    // INLINE_TEST_REQUIRED: Key-Fingerprint header is forwarded from upstream
+
+    /// Start a mock upstream that returns a Key-Fingerprint header on GET /v2/ohttp-key.
+    async fn start_mock_upstream_with_fingerprint(fingerprint: &str) -> u16 {
+        let fp = fingerprint.to_owned();
+        let mock = axum::Router::new().route(
+            "/v2/ohttp-key",
+            get(move || {
+                let fp = fp.clone();
+                async move {
+                    let mut resp = (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/ohttp-keys")],
+                        vec![0xAA, 0xBB], // dummy key bytes
+                    )
+                        .into_response();
+                    resp.headers_mut().insert(
+                        header::HeaderName::from_static("key-fingerprint"),
+                        header::HeaderValue::from_str(&fp).unwrap(),
+                    );
+                    resp
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn key_endpoint_forwards_key_fingerprint_header() {
+        let port = start_mock_upstream_with_fingerprint("abc123def456").await;
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state(65536, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v2/ohttp-key")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "key endpoint should return 200"
+        );
+
+        let fingerprint = resp
+            .headers()
+            .get("key-fingerprint")
+            .expect("response should include Key-Fingerprint header")
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            fingerprint, "abc123def456",
+            "Key-Fingerprint header value should match upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn key_endpoint_works_without_fingerprint_header() {
+        // Mock upstream that does NOT return Key-Fingerprint
+        let mock = axum::Router::new().route(
+            "/v2/ohttp-key",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "application/ohttp-keys")],
+                    vec![0xCC, 0xDD],
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state(65536, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v2/ohttp-key")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "key endpoint should return 200"
+        );
+        assert!(
+            resp.headers().get("key-fingerprint").is_none(),
+            "Key-Fingerprint header should not be present when upstream omits it"
         );
     }
 }

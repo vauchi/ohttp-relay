@@ -71,7 +71,11 @@ impl UpstreamClient {
     /// Fetch the OHTTP key from the gateway's `GET /v2/ohttp-key`.
     ///
     /// No client-derived data is included in this request.
-    pub async fn get_ohttp_key(&self, timeout: Duration) -> Result<Bytes, UpstreamError> {
+    /// Returns the key body and, if present, the `Key-Fingerprint` header value.
+    pub async fn get_ohttp_key(
+        &self,
+        timeout: Duration,
+    ) -> Result<OhttpKeyResponse, UpstreamError> {
         let url = format!("{}/v2/ohttp-key", self.gateway_url);
         debug!(url, "GET upstream /v2/ohttp-key");
 
@@ -87,8 +91,27 @@ impl UpstreamClient {
             return Err(UpstreamError::Status(resp.status().as_u16()));
         }
 
-        resp.bytes().await.map_err(UpstreamError::Request)
+        let key_fingerprint = resp
+            .headers()
+            .get("Key-Fingerprint")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+
+        let body = resp.bytes().await.map_err(UpstreamError::Request)?;
+
+        Ok(OhttpKeyResponse {
+            body,
+            key_fingerprint,
+        })
     }
+}
+
+/// Response from `get_ohttp_key` containing the key body and optional fingerprint header.
+pub struct OhttpKeyResponse {
+    /// The raw OHTTP key configuration bytes.
+    pub body: Bytes,
+    /// The `Key-Fingerprint` header value, if the upstream included it.
+    pub key_fingerprint: Option<String>,
 }
 
 /// Errors from upstream gateway calls.
