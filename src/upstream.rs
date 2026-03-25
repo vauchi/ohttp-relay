@@ -47,7 +47,15 @@ impl UpstreamClient {
     ///
     /// Only the raw bytes are sent — no headers from the original client
     /// request are forwarded. The response body is returned verbatim.
-    pub async fn post_ohttp(&self, body: Bytes, timeout: Duration) -> Result<Bytes, UpstreamError> {
+    ///
+    /// `max_response_bytes` limits how much data we read from the upstream
+    /// response, protecting against a compromised upstream returning gigabytes.
+    pub async fn post_ohttp(
+        &self,
+        body: Bytes,
+        timeout: Duration,
+        max_response_bytes: usize,
+    ) -> Result<Bytes, UpstreamError> {
         let url = format!("{}/v2/ohttp", self.gateway_url);
         debug!(url, body_len = body.len(), "POST upstream /v2/ohttp");
 
@@ -65,16 +73,20 @@ impl UpstreamClient {
             return Err(UpstreamError::Status(resp.status().as_u16()));
         }
 
-        resp.bytes().await.map_err(UpstreamError::Request)
+        read_bounded_response(resp, max_response_bytes).await
     }
 
     /// Fetch the OHTTP key from the gateway's `GET /v2/ohttp-key`.
     ///
     /// No client-derived data is included in this request.
     /// Returns the key body and, if present, the `Key-Fingerprint` header value.
+    ///
+    /// `max_key_response_bytes` limits key config reads (typically ~100 bytes,
+    /// default limit 4 KiB).
     pub async fn get_ohttp_key(
         &self,
         timeout: Duration,
+        max_key_response_bytes: usize,
     ) -> Result<OhttpKeyResponse, UpstreamError> {
         let url = format!("{}/v2/ohttp-key", self.gateway_url);
         debug!(url, "GET upstream /v2/ohttp-key");
@@ -97,13 +109,46 @@ impl UpstreamClient {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_owned());
 
-        let body = resp.bytes().await.map_err(UpstreamError::Request)?;
+        let body = read_bounded_response(resp, max_key_response_bytes).await?;
 
         Ok(OhttpKeyResponse {
             body,
             key_fingerprint,
         })
     }
+}
+
+/// Read a response body up to `max_bytes`, rejecting oversized responses.
+///
+/// Checks `Content-Length` first for a fast reject, then reads chunks
+/// incrementally to detect oversized bodies without unbounded allocation.
+async fn read_bounded_response(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Bytes, UpstreamError> {
+    // Fast-reject via Content-Length header if present.
+    if let Some(content_length) = resp.content_length()
+        && content_length > max_bytes as u64
+    {
+        return Err(UpstreamError::ResponseTooLarge {
+            limit: max_bytes,
+            actual: Some(content_length),
+        });
+    }
+
+    // Read chunks incrementally, enforcing the size limit.
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    while let Some(chunk) = resp.chunk().await.map_err(UpstreamError::Request)? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() > max_bytes {
+            return Err(UpstreamError::ResponseTooLarge {
+                limit: max_bytes,
+                actual: None,
+            });
+        }
+    }
+
+    Ok(Bytes::from(buf))
 }
 
 /// Response from `get_ohttp_key` containing the key body and optional fingerprint header.
@@ -121,6 +166,8 @@ pub enum UpstreamError {
     Request(reqwest::Error),
     /// The gateway returned a non-2xx status code.
     Status(u16),
+    /// The upstream response body exceeded the configured limit.
+    ResponseTooLarge { limit: usize, actual: Option<u64> },
 }
 
 impl std::fmt::Display for UpstreamError {
@@ -128,6 +175,13 @@ impl std::fmt::Display for UpstreamError {
         match self {
             UpstreamError::Request(e) => write!(f, "upstream request error: {e}"),
             UpstreamError::Status(code) => write!(f, "upstream returned status {code}"),
+            UpstreamError::ResponseTooLarge { limit, actual } => {
+                write!(f, "upstream response exceeds {limit} byte limit")?;
+                if let Some(len) = actual {
+                    write!(f, " (Content-Length: {len})")?;
+                }
+                Ok(())
+            }
         }
     }
 }

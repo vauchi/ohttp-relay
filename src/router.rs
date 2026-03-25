@@ -71,7 +71,11 @@ async fn handle_ohttp_forward(State(state): State<AppState>, request: Request) -
 
     match state
         .upstream
-        .post_ohttp(body, state.config.request_timeout)
+        .post_ohttp(
+            body,
+            state.config.request_timeout,
+            state.config.max_response_bytes,
+        )
         .await
     {
         Ok(response_bytes) => (
@@ -95,7 +99,10 @@ async fn handle_ohttp_forward(State(state): State<AppState>, request: Request) -
 async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
     match state
         .upstream
-        .get_ohttp_key(state.config.request_timeout)
+        .get_ohttp_key(
+            state.config.request_timeout,
+            state.config.max_key_response_bytes,
+        )
         .await
     {
         Ok(key_resp) => {
@@ -182,6 +189,8 @@ mod tests {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             gateway_url: gateway_url.to_owned(),
             max_request_bytes,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
             request_timeout: std::time::Duration::from_secs(5),
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
@@ -409,6 +418,109 @@ mod tests {
         assert!(
             resp.headers().get("key-fingerprint").is_none(),
             "Key-Fingerprint header should not be present when upstream omits it"
+        );
+    }
+
+    // INLINE_TEST_REQUIRED: oversized upstream key response is rejected
+
+    fn make_state_with_limits(
+        max_request_bytes: usize,
+        max_response_bytes: usize,
+        max_key_response_bytes: usize,
+        gateway_url: &str,
+    ) -> AppState {
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: gateway_url.to_owned(),
+            max_request_bytes,
+            max_response_bytes,
+            max_key_response_bytes,
+            request_timeout: std::time::Duration::from_secs(5),
+        };
+        let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
+        AppState { config, upstream }
+    }
+
+    #[tokio::test]
+    async fn key_endpoint_rejects_oversized_upstream_response() {
+        // Mock upstream returning a key body larger than our limit
+        let oversized_body = vec![0xAA; 200]; // 200 bytes, limit will be 50
+        let mock = axum::Router::new().route(
+            "/v2/ohttp-key",
+            get(move || {
+                let body = oversized_body.clone();
+                async move {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/ohttp-keys")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state_with_limits(65536, 131072, 50, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v2/ohttp-key")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_GATEWAY,
+            "oversized key response from upstream should result in 502"
+        );
+    }
+
+    #[tokio::test]
+    async fn ohttp_forward_rejects_oversized_upstream_response() {
+        // Mock upstream returning a response body larger than our limit
+        let oversized_body = vec![0xBB; 300]; // 300 bytes, limit will be 100
+        let mock = axum::Router::new().route(
+            "/v2/ohttp",
+            post(move || {
+                let body = oversized_body.clone();
+                async move {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "message/ohttp-res")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state_with_limits(65536, 100, 4096, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v2/ohttp")
+            .header(header::CONTENT_TYPE, "message/ohttp-req")
+            .body(Body::from(vec![0x01, 0x02]))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_GATEWAY,
+            "oversized OHTTP response from upstream should result in 502"
         );
     }
 }

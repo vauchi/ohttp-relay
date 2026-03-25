@@ -38,6 +38,8 @@ async fn main() {
         listen_addr = %config.listen_addr,
         gateway_url = %config.gateway_url,
         max_request_bytes = config.max_request_bytes,
+        max_response_bytes = config.max_response_bytes,
+        max_key_response_bytes = config.max_key_response_bytes,
         request_timeout_secs = config.request_timeout.as_secs(),
         "vauchi-ohttp-relay starting"
     );

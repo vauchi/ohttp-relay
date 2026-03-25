@@ -20,6 +20,10 @@ pub struct RelayConfig {
     pub gateway_url: String,
     /// Maximum allowed request body size in bytes.
     pub max_request_bytes: usize,
+    /// Maximum allowed upstream response body size in bytes (default: 128 KiB).
+    pub max_response_bytes: usize,
+    /// Maximum allowed upstream key response body size in bytes (default: 4 KiB).
+    pub max_key_response_bytes: usize,
     /// Timeout for upstream requests.
     pub request_timeout: Duration,
 }
@@ -41,6 +45,14 @@ impl RelayConfig {
             .parse::<usize>()
             .map_err(|e| ConfigError::parse("OHTTP_RELAY_MAX_REQUEST_BYTES", e.to_string()))?;
 
+        let max_response_bytes = env_or("OHTTP_RELAY_MAX_RESPONSE_BYTES", "131072")
+            .parse::<usize>()
+            .map_err(|e| ConfigError::parse("OHTTP_RELAY_MAX_RESPONSE_BYTES", e.to_string()))?;
+
+        let max_key_response_bytes = env_or("OHTTP_RELAY_MAX_KEY_RESPONSE_BYTES", "4096")
+            .parse::<usize>()
+            .map_err(|e| ConfigError::parse("OHTTP_RELAY_MAX_KEY_RESPONSE_BYTES", e.to_string()))?;
+
         let timeout_secs = env_or("OHTTP_RELAY_REQUEST_TIMEOUT_SECS", "30")
             .parse::<u64>()
             .map_err(|e| ConfigError::parse("OHTTP_RELAY_REQUEST_TIMEOUT_SECS", e.to_string()))?;
@@ -49,6 +61,8 @@ impl RelayConfig {
             listen_addr,
             gateway_url,
             max_request_bytes,
+            max_response_bytes,
+            max_key_response_bytes,
             request_timeout: Duration::from_secs(timeout_secs),
         })
     }
@@ -181,6 +195,14 @@ mod tests {
         let cfg = RelayConfig::from_env().expect("config with only required var should succeed");
         assert_eq!(cfg.listen_addr.to_string(), "0.0.0.0:8082");
         assert_eq!(cfg.max_request_bytes, 65536);
+        assert_eq!(
+            cfg.max_response_bytes, 131072,
+            "default max_response_bytes should be 128 KiB"
+        );
+        assert_eq!(
+            cfg.max_key_response_bytes, 4096,
+            "default max_key_response_bytes should be 4 KiB"
+        );
         assert_eq!(cfg.request_timeout, std::time::Duration::from_secs(30));
         assert_eq!(cfg.gateway_url, "http://localhost:8080");
 
