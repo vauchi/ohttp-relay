@@ -120,23 +120,36 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
 ///
 /// `axum::body::to_bytes` accepts a `limit` parameter: if the body is larger
 /// than `limit` bytes it returns an error, which we map to 413.
+///
+/// If the request carries a `Content-Length` header that already exceeds the
+/// limit we reject early without reading. Otherwise, any error from `to_bytes`
+/// with a size limit is treated as 413 — the overwhelming cause is a
+/// `LengthLimitError`, and treating the rare body-read failure the same way
+/// avoids relying on fragile error-message string matching.
 async fn read_bounded_body(request: Request, max_bytes: usize) -> Result<Bytes, Response> {
+    // Fast-reject: if Content-Length is present and already too large, skip reading.
+    if let Some(content_length) = request.headers().get(header::CONTENT_LENGTH)
+        && let Ok(len_str) = content_length.to_str()
+        && let Ok(len) = len_str.parse::<usize>()
+        && len > max_bytes
+    {
+        warn!(
+            max_bytes,
+            content_length = len,
+            "request body exceeds limit (Content-Length)"
+        );
+        return Err(StatusCode::PAYLOAD_TOO_LARGE.into_response());
+    }
+
     let body = request.into_body();
     match axum::body::to_bytes(body, max_bytes).await {
         Ok(bytes) => Ok(bytes),
         Err(e) => {
-            // to_bytes returns an error when the body exceeds the limit.
-            let msg = e.to_string();
-            if msg.contains("length limit")
-                || msg.contains("too large")
-                || msg.contains("bytes remaining")
-            {
-                warn!(max_bytes, "request body exceeds limit");
-                Err(StatusCode::PAYLOAD_TOO_LARGE.into_response())
-            } else {
-                warn!(error = %e, "failed to read request body");
-                Err(StatusCode::BAD_REQUEST.into_response())
-            }
+            // With a size limit set, the dominant error cause is LengthLimitError.
+            // Treating any to_bytes error as 413 avoids fragile string matching
+            // against axum/http-body-util internal error messages.
+            warn!(max_bytes, error = %e, "request body exceeds limit or read failed");
+            Err(StatusCode::PAYLOAD_TOO_LARGE.into_response())
         }
     }
 }
@@ -231,6 +244,31 @@ mod tests {
             resp.status(),
             StatusCode::PAYLOAD_TOO_LARGE,
             "body at exact limit should not be rejected with 413"
+        );
+    }
+
+    // INLINE_TEST_REQUIRED: Content-Length fast-reject returns 413 without reading body
+
+    #[tokio::test]
+    async fn ohttp_forward_rejects_oversized_content_length_header() {
+        let state = make_state(10, "http://127.0.0.1:19999");
+        let app = build_router(state);
+
+        // Content-Length declares 100 bytes but body is empty — the header alone
+        // should trigger a 413 before any body read is attempted.
+        let req = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v2/ohttp")
+            .header(header::CONTENT_TYPE, "message/ohttp-req")
+            .header(header::CONTENT_LENGTH, "100")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "oversized Content-Length header should be rejected with 413"
         );
     }
 
