@@ -26,6 +26,7 @@ include:
       - '/ci-templates/test-quality.yml'
       - '/ci-templates/image-lint.yml'
       - '/ci-templates/badges.yml'
+      - '/ci-templates/perf.yml'
   - template: Security/Container-Scanning.gitlab-ci.yml
 
 stages:
