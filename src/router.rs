@@ -10,14 +10,17 @@
 //! - `GET  /health`       — local health check (no upstream call)
 //!
 //! Security invariants enforced here:
-//! - Client IP is never read, logged, or forwarded.
+//! - Client IP is used only for rate limiting — never logged or forwarded.
 //! - No identifying headers are forwarded upstream or downstream.
 //! - Request bodies above `max_request_bytes` are rejected before forwarding.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::{
     Router,
     body::Bytes,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -25,6 +28,7 @@ use axum::{
 use tracing::{debug, warn};
 
 use crate::config::RelayConfig;
+use crate::rate_limit::RateLimiter;
 use crate::upstream::UpstreamClient;
 
 /// Shared application state injected into every handler.
@@ -32,6 +36,8 @@ use crate::upstream::UpstreamClient;
 pub struct AppState {
     pub config: RelayConfig,
     pub upstream: UpstreamClient,
+    /// Per-IP rate limiter for the OHTTP forward endpoint. `None` if disabled.
+    pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 /// Build the router with all routes wired up.
@@ -59,7 +65,22 @@ async fn handle_health() -> impl IntoResponse {
 /// The raw request body is forwarded verbatim. No headers from the client are
 /// passed upstream. The response body from the gateway is returned verbatim
 /// to the client with no identifying headers added.
-async fn handle_ohttp_forward(State(state): State<AppState>, request: Request) -> Response {
+///
+/// Rate-limited per source IP when a rate limiter is configured. The IP is
+/// used only for rate limiting — it is never logged or forwarded.
+async fn handle_ohttp_forward(
+    State(state): State<AppState>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    request: Request,
+) -> Response {
+    // Rate limit by source IP if configured.
+    if let Some(ref limiter) = state.rate_limiter
+        && let Some(ConnectInfo(addr)) = connect_info
+        && !limiter.check(addr.ip())
+    {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+
     let max = state.config.max_request_bytes;
 
     let body = match read_bounded_body(request, max).await {
@@ -191,10 +212,15 @@ mod tests {
             max_request_bytes,
             max_response_bytes: 131072,
             max_key_response_bytes: 4096,
+            rate_limit_per_sec: 0, // disabled in most tests
             request_timeout: std::time::Duration::from_secs(5),
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
-        AppState { config, upstream }
+        AppState {
+            config,
+            upstream,
+            rate_limiter: None,
+        }
     }
 
     // INLINE_TEST_REQUIRED: health endpoint returns 200 ok
@@ -435,10 +461,15 @@ mod tests {
             max_request_bytes,
             max_response_bytes,
             max_key_response_bytes,
+            rate_limit_per_sec: 0,
             request_timeout: std::time::Duration::from_secs(5),
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
-        AppState { config, upstream }
+        AppState {
+            config,
+            upstream,
+            rate_limiter: None,
+        }
     }
 
     #[tokio::test]
@@ -522,5 +553,132 @@ mod tests {
             StatusCode::BAD_GATEWAY,
             "oversized OHTTP response from upstream should result in 502"
         );
+    }
+
+    // INLINE_TEST_REQUIRED: rate limiter returns 429 after burst exhausted
+
+    #[tokio::test]
+    async fn rate_limiter_returns_429_after_burst_exhausted() {
+        // Start the relay as a real TCP server so ConnectInfo<SocketAddr> works.
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: "http://127.0.0.1:19999".to_owned(),
+            max_request_bytes: 65536,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
+            rate_limit_per_sec: 3, // very low limit for testing
+            request_timeout: std::time::Duration::from_secs(5),
+        };
+        let rate_limiter = Some(Arc::new(crate::rate_limit::RateLimiter::new(3)));
+        let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
+        let state = AppState {
+            config,
+            upstream,
+            rate_limiter,
+        };
+        let app = build_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{relay_addr}/v2/ohttp");
+
+        // Send requests up to the burst limit — should all succeed (502 from
+        // unreachable upstream, but NOT 429).
+        for i in 0..3 {
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "message/ohttp-req")
+                .body(vec![0x01])
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(
+                resp.status().as_u16(),
+                429,
+                "request {i} within burst should not be rate-limited"
+            );
+        }
+
+        // Next request should be rate-limited.
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "message/ohttp-req")
+            .body(vec![0x01])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            429,
+            "request over burst limit should return 429 Too Many Requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_and_key_endpoints_not_rate_limited() {
+        // Verify that health and key endpoints are not affected by rate limiting.
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: "http://127.0.0.1:19999".to_owned(),
+            max_request_bytes: 65536,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
+            rate_limit_per_sec: 1, // extremely low limit
+            request_timeout: std::time::Duration::from_secs(5),
+        };
+        let rate_limiter = Some(Arc::new(crate::rate_limit::RateLimiter::new(1)));
+        let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
+        let state = AppState {
+            config,
+            upstream,
+            rate_limiter,
+        };
+        let app = build_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+
+        // Exhaust the rate limit with a POST.
+        let _ = client
+            .post(format!("http://{relay_addr}/v2/ohttp"))
+            .header("Content-Type", "message/ohttp-req")
+            .body(vec![0x01])
+            .send()
+            .await
+            .unwrap();
+
+        // Health should still work (not rate-limited).
+        for _ in 0..5 {
+            let resp = client
+                .get(format!("http://{relay_addr}/health"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status().as_u16(),
+                200,
+                "health endpoint should never be rate-limited"
+            );
+        }
     }
 }

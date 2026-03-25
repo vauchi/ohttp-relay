@@ -24,6 +24,9 @@ pub struct RelayConfig {
     pub max_response_bytes: usize,
     /// Maximum allowed upstream key response body size in bytes (default: 4 KiB).
     pub max_key_response_bytes: usize,
+    /// Per-IP rate limit for the OHTTP forward endpoint (requests per second).
+    /// Set to 0 to disable rate limiting.
+    pub rate_limit_per_sec: u32,
     /// Timeout for upstream requests.
     pub request_timeout: Duration,
 }
@@ -53,6 +56,10 @@ impl RelayConfig {
             .parse::<usize>()
             .map_err(|e| ConfigError::parse("OHTTP_RELAY_MAX_KEY_RESPONSE_BYTES", e.to_string()))?;
 
+        let rate_limit_per_sec = env_or("OHTTP_RELAY_RATE_LIMIT_PER_SEC", "50")
+            .parse::<u32>()
+            .map_err(|e| ConfigError::parse("OHTTP_RELAY_RATE_LIMIT_PER_SEC", e.to_string()))?;
+
         let timeout_secs = env_or("OHTTP_RELAY_REQUEST_TIMEOUT_SECS", "30")
             .parse::<u64>()
             .map_err(|e| ConfigError::parse("OHTTP_RELAY_REQUEST_TIMEOUT_SECS", e.to_string()))?;
@@ -63,6 +70,7 @@ impl RelayConfig {
             max_request_bytes,
             max_response_bytes,
             max_key_response_bytes,
+            rate_limit_per_sec,
             request_timeout: Duration::from_secs(timeout_secs),
         })
     }
@@ -202,6 +210,10 @@ mod tests {
         assert_eq!(
             cfg.max_key_response_bytes, 4096,
             "default max_key_response_bytes should be 4 KiB"
+        );
+        assert_eq!(
+            cfg.rate_limit_per_sec, 50,
+            "default rate_limit_per_sec should be 50"
         );
         assert_eq!(cfg.request_timeout, std::time::Duration::from_secs(30));
         assert_eq!(cfg.gateway_url, "http://localhost:8080");

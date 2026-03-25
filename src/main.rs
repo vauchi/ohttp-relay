@@ -14,11 +14,15 @@
 //!
 //! All configuration is via environment variables. See `config::RelayConfig`.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{error, info};
 
 use vauchi_ohttp_relay::config::RelayConfig;
+use vauchi_ohttp_relay::rate_limit::RateLimiter;
 use vauchi_ohttp_relay::router::{AppState, build_router};
 use vauchi_ohttp_relay::upstream::UpstreamClient;
 
@@ -40,14 +44,23 @@ async fn main() {
         max_request_bytes = config.max_request_bytes,
         max_response_bytes = config.max_response_bytes,
         max_key_response_bytes = config.max_key_response_bytes,
+        rate_limit_per_sec = config.rate_limit_per_sec,
         request_timeout_secs = config.request_timeout.as_secs(),
         "vauchi-ohttp-relay starting"
     );
+
+    let rate_limiter = if config.rate_limit_per_sec > 0 {
+        Some(Arc::new(RateLimiter::new(config.rate_limit_per_sec)))
+    } else {
+        info!("rate limiting disabled (OHTTP_RELAY_RATE_LIMIT_PER_SEC=0)");
+        None
+    };
 
     let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
     let state = AppState {
         config: config.clone(),
         upstream,
+        rate_limiter,
     };
 
     let app = build_router(state);
@@ -62,10 +75,13 @@ async fn main() {
 
     info!(addr = %config.listen_addr, "listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap_or_else(|e| error!(error = %e, "server error"));
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .unwrap_or_else(|e| error!(error = %e, "server error"));
 
     info!("vauchi-ohttp-relay stopped");
 }
