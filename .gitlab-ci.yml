@@ -11,6 +11,7 @@
 #   - Change-based rules: Jobs run only when relevant files change
 #   - Timeouts: Prevent runaway jobs from blocking runners
 #   - Interruptible: Auto-cancel on new commits (via templates)
+#   - Read-only cache for lint jobs
 
 # Shared templates
 include:
