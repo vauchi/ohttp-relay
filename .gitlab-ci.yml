@@ -39,6 +39,7 @@ stages:
   - mutation
   - security
   - build
+  - load
   - scan
   - deploy
 
@@ -251,6 +252,7 @@ build:release:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_PIPELINE_SOURCE == "schedule"
 
 build:docker:
   extends: .timeout-standard
@@ -277,6 +279,66 @@ build:docker:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
+# ============================================================
+# Load Stage (nightly, k6 HTTP load test)
+# ============================================================
+
+# k6 HTTP load test — runs against a local ohttp-relay instance
+# with a mock upstream gateway. Tests throughput, latency, and
+# rate limiting under sustained load.
+# Thresholds: p95 forward < 500ms, p95 key < 300ms, >95% success.
+load:k6:
+  extends: [.linux-runner, .timeout-standard]
+  stage: load
+  needs:
+    - job: build:release
+      artifacts: true
+  before_script:
+    - !reference [.self-hosted, before_script]
+    - command -v k6 >/dev/null 2>&1 || { curl -fsSL https://github.com/grafana/k6/releases/download/v0.56.0/k6-v0.56.0-linux-amd64.tar.gz | tar xz --strip-components=1 -C /usr/local/bin k6-v0.56.0-linux-amd64/k6; }
+  script:
+    - |
+      # Start mock upstream gateway (Python HTTP server on port 9090)
+      python3 tests/load/mock-gateway.py 9090 &
+      MOCK_PID=$!
+
+      # Wait for mock gateway
+      for i in $(seq 1 10); do
+        curl -sf http://127.0.0.1:9090/health >/dev/null 2>&1 && break
+        sleep 0.5
+      done
+      curl -sf http://127.0.0.1:9090/health || { echo "Mock gateway failed to start"; kill $MOCK_PID; exit 1; }
+
+      # Start ohttp-relay pointing at mock gateway
+      OHTTP_RELAY_LISTEN_ADDR=127.0.0.1:8082 \
+      OHTTP_RELAY_GATEWAY_URL=http://127.0.0.1:9090 \
+      OHTTP_RELAY_RATE_LIMIT_PER_SEC=0 \
+      ./target/release/vauchi-ohttp-relay &
+      RELAY_PID=$!
+
+      # Wait for relay to be ready
+      for i in $(seq 1 20); do
+        curl -sf http://127.0.0.1:8082/health >/dev/null 2>&1 && break
+        delay=$(awk "BEGIN { v = 0.2 * 2^($i-1); print (v < 3.0 ? v : 3.0) }")
+        sleep "$delay"
+      done
+      curl -sf http://127.0.0.1:8082/health || { echo "OHTTP relay failed to start"; kill $RELAY_PID $MOCK_PID; exit 1; }
+
+      # Run k6 load test
+      k6 run --summary-export=summary.json tests/load/ohttp-relay-load-test.js || K6_EXIT=$?
+
+      kill $RELAY_PID $MOCK_PID 2>/dev/null || true
+      exit ${K6_EXIT:-0}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  allow_failure: true
+  artifacts:
+    paths:
+      - summary.json
+    expire_in: 1 week
+    when: always
 
 # ============================================================
 # Deploy Stage
