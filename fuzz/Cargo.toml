@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "vauchi-ohttp-relay-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.vauchi-ohttp-relay]
+path = ".."
+
+# Prevents interference with parent workspace
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_validate_gateway_url"
+path = "fuzz_targets/fuzz_validate_gateway_url.rs"
+doc = false

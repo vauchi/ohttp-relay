@@ -80,7 +80,7 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
-fn validate_gateway_url(url: &str) -> Result<(), ConfigError> {
+pub fn validate_gateway_url(url: &str) -> Result<(), ConfigError> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(ConfigError::parse(
             "OHTTP_RELAY_GATEWAY_URL",
@@ -126,11 +126,10 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+// INLINE_TEST_REQUIRED: config defaults and validation
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // INLINE_TEST_REQUIRED: config defaults and validation
 
     #[test]
     fn validate_gateway_url_rejects_missing_scheme() {
