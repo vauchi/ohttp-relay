@@ -196,6 +196,8 @@ async fn read_bounded_body(request: Request, max_bytes: usize) -> Result<Bytes, 
 // Tests
 // ---------------------------------------------------------------------------
 
+// INLINE_TEST_REQUIRED: router tests need oneshot() on the built router which
+// requires access to private handler functions and AppState construction
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -314,6 +316,31 @@ mod tests {
             resp.status(),
             StatusCode::PAYLOAD_TOO_LARGE,
             "oversized Content-Length header should be rejected with 413"
+        );
+    }
+
+    // @internal
+    // Boundary: Content-Length exactly at limit must NOT be rejected (> not >=).
+    #[tokio::test]
+    async fn ohttp_forward_accepts_content_length_at_exact_limit() {
+        let state = make_state(10, "http://127.0.0.1:19999");
+        let app = build_router(state);
+
+        // Content-Length == max_bytes (10) — should pass the Content-Length check.
+        // The request will fail at upstream (502), but must NOT be 413.
+        let req = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v2/ohttp")
+            .header(header::CONTENT_TYPE, "message/ohttp-req")
+            .header(header::CONTENT_LENGTH, "10")
+            .body(Body::from(vec![0u8; 10]))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Content-Length at exact limit should not be rejected with 413"
         );
     }
 
@@ -552,6 +579,124 @@ mod tests {
             resp.status(),
             StatusCode::BAD_GATEWAY,
             "oversized OHTTP response from upstream should result in 502"
+        );
+    }
+
+    // @internal
+    // Boundary: upstream response body at exact limit must succeed (> not >=).
+    #[tokio::test]
+    async fn ohttp_forward_accepts_upstream_response_at_exact_limit() {
+        let exact_body = vec![0xCC; 100]; // exactly at limit
+        let mock = axum::Router::new().route(
+            "/v2/ohttp",
+            post(move || {
+                let body = exact_body.clone();
+                async move {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "message/ohttp-res")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state_with_limits(65536, 100, 4096, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v2/ohttp")
+            .header(header::CONTENT_TYPE, "message/ohttp-req")
+            .body(Body::from(vec![0x01, 0x02]))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "upstream response at exact limit should succeed, not 502"
+        );
+    }
+
+    // @internal
+    // Boundary: upstream key response at exact limit must succeed.
+    #[tokio::test]
+    async fn key_endpoint_accepts_upstream_response_at_exact_limit() {
+        let exact_body = vec![0xAA; 50]; // exactly at limit
+        let mock = axum::Router::new().route(
+            "/v2/ohttp-key",
+            get(move || {
+                let body = exact_body.clone();
+                async move {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/ohttp-keys")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state_with_limits(65536, 131072, 50, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v2/ohttp-key")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "upstream key response at exact limit should succeed, not 502"
+        );
+    }
+
+    // @internal
+    // Upstream returns non-2xx status — must be propagated as 502.
+    #[tokio::test]
+    async fn ohttp_forward_returns_502_on_upstream_error_status() {
+        let mock = axum::Router::new().route(
+            "/v2/ohttp",
+            post(|| async { StatusCode::INTERNAL_SERVER_ERROR.into_response() }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let gateway_url = format!("http://127.0.0.1:{port}");
+        let state = make_state(65536, &gateway_url);
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v2/ohttp")
+            .header(header::CONTENT_TYPE, "message/ohttp-req")
+            .body(Body::from(vec![0x01]))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_GATEWAY,
+            "upstream 500 should be mapped to 502 Bad Gateway"
         );
     }
 

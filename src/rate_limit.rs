@@ -81,6 +81,8 @@ impl RateLimiter {
     }
 }
 
+// INLINE_TEST_REQUIRED: rate limiter is a single-module state machine — splitting tests
+// would require re-exporting internal TokenBucket or duplicating setup logic
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +125,28 @@ mod tests {
 
         // IP B should still have its own fresh bucket.
         assert!(limiter.check(ip_b), "IP B should not be affected by IP A");
+    }
+
+    // @internal
+    #[test]
+    fn tokens_refill_over_time() {
+        let limiter = RateLimiter::new(2);
+        let ip: IpAddr = "10.0.0.6".parse().unwrap();
+
+        // Exhaust the bucket.
+        assert!(limiter.check(ip));
+        assert!(limiter.check(ip));
+        assert!(!limiter.check(ip), "bucket should be empty");
+
+        // Wait long enough for at least 1 token to refill.
+        // With refill_rate=2.0 tokens/sec, 600ms should yield ~1.2 tokens.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        // Should be allowed again after refill.
+        assert!(
+            limiter.check(ip),
+            "token should have refilled after waiting"
+        );
     }
 
     #[test]
