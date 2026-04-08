@@ -341,6 +341,55 @@ load:k6:
     when: always
 
 # ============================================================
+# DAST Stage — ZAP scan for HTTP vulnerabilities
+# ============================================================
+
+# OWASP ZAP dynamic application security testing.
+# Scans ohttp-relay HTTP endpoints for common vulnerabilities
+# (header injection, CORS issues, information disclosure).
+# The relay runs as a service container; upstream is unreachable so
+# forwarding endpoints return 502, but ZAP still tests headers, error
+# handling, and endpoint security.
+dast:zap:
+  stage: load
+  tags: [docker]
+  needs:
+    - job: build:docker
+      artifacts: false
+  image:
+    name: ghcr.io/zaproxy/zaproxy:2.17.0
+    entrypoint: [""]
+  services:
+    - name: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+      alias: ohttp-relay
+      variables:
+        OHTTP_RELAY_LISTEN_ADDR: "0.0.0.0:8082"
+        OHTTP_RELAY_GATEWAY_URL: "http://localhost:19999"
+        OHTTP_RELAY_RATE_LIMIT_PER_SEC: "0"
+  before_script: []
+  script:
+    - |
+      # Wait for ohttp-relay service to be ready
+      for i in $(seq 1 30); do
+        curl -sf http://ohttp-relay:8082/health >/dev/null 2>&1 && break
+        sleep 1
+      done
+      curl -sf http://ohttp-relay:8082/health || { echo "OHTTP relay service failed to start after 30 attempts"; exit 1; }
+
+      # ZAP baseline scan against HTTP endpoints
+      zap-baseline.py -t http://ohttp-relay:8082 -r zap-report.html -J zap-report.json
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  allow_failure: true
+  artifacts:
+    paths:
+      - zap-report.html
+      - zap-report.json
+    expire_in: 1 week
+    when: always
+
+# ============================================================
 # Deploy Stage
 # ============================================================
 # Auto-triggers the centralized deploy pipeline in _private.
