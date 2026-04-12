@@ -29,6 +29,7 @@ include:
       - '/ci-templates/badges.yml'
       - '/ci-templates/perf.yml'
       - '/ci-templates/github-mirror.yml'
+      - '/ci-templates/downstream.yml'
       - '/ci-templates/mutation.yml'
   - template: Security/Container-Scanning.gitlab-ci.yml
 
@@ -42,6 +43,7 @@ stages:
   - load
   - scan
   - deploy
+  - trigger
 
 variables:
   CS_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
@@ -467,6 +469,17 @@ rc:security:audit:
 
 pages:
   extends: .badges-pages
+
+# ============================================================
+# Trigger Stage — Downstream E2E
+# ============================================================
+
+# Trigger E2E tests when ohttp-relay merges to main.
+# OHTTP E2E tests depend on ohttp-relay — changes here need re-validation.
+trigger:e2e:
+  extends: .trigger-on-merge
+  variables:
+    DOWNSTREAM_PROJECT: vauchi/e2e
 
 github-mirror:
   extends: .github-mirror
