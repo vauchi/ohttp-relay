@@ -161,6 +161,20 @@ mod tests {
             .expect("valid https URL should be accepted");
     }
 
+    #[test]
+    fn config_error_display_missing() {
+        let err = ConfigError::missing("MY_VAR");
+        let msg = err.to_string();
+        assert_eq!(msg, "required env var MY_VAR is not set");
+    }
+
+    #[test]
+    fn config_error_display_parse() {
+        let err = ConfigError::parse("MY_VAR", "not a number".to_owned());
+        let msg = err.to_string();
+        assert_eq!(msg, "env var MY_VAR is invalid: not a number");
+    }
+
     // Tests that call RelayConfig::from_env() must run serially because they
     // mutate process-wide environment variables.  We achieve this by running
     // the env-touching assertions inside a single test function guarded by a

@@ -162,4 +162,22 @@ mod tests {
         let buckets = limiter.buckets.lock().unwrap();
         assert!(buckets.is_empty(), "stale entries should be evicted");
     }
+
+    #[test]
+    fn evict_stale_retains_fresh_entries() {
+        let limiter = RateLimiter::new(10);
+        let ip: IpAddr = "10.0.0.7".parse().unwrap();
+
+        // Create an entry just now.
+        limiter.check(ip);
+
+        // With a large max_age, the fresh entry should survive eviction.
+        limiter.evict_stale(std::time::Duration::from_secs(3600));
+
+        let buckets = limiter.buckets.lock().unwrap();
+        assert!(
+            buckets.contains_key(&ip),
+            "fresh entries should not be evicted with large max_age"
+        );
+    }
 }

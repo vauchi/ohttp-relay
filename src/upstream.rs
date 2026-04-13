@@ -187,3 +187,36 @@ impl std::fmt::Display for UpstreamError {
 }
 
 impl std::error::Error for UpstreamError {}
+
+// INLINE_TEST_REQUIRED: Display impls are private formatting — testing alongside the type definition
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_status_error() {
+        let err = UpstreamError::Status(502);
+        assert_eq!(err.to_string(), "upstream returned status 502");
+    }
+
+    #[test]
+    fn display_response_too_large_without_content_length() {
+        let err = UpstreamError::ResponseTooLarge {
+            limit: 1024,
+            actual: None,
+        };
+        assert_eq!(err.to_string(), "upstream response exceeds 1024 byte limit");
+    }
+
+    #[test]
+    fn display_response_too_large_with_content_length() {
+        let err = UpstreamError::ResponseTooLarge {
+            limit: 1024,
+            actual: Some(9999),
+        };
+        assert_eq!(
+            err.to_string(),
+            "upstream response exceeds 1024 byte limit (Content-Length: 9999)"
+        );
+    }
+}
