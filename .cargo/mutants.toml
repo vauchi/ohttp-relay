@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Skip binary entry-point functions that cannot be unit-tested:
+# - main(): requires full server lifecycle (binds port, awaits shutdown signal)
+# - shutdown_signal(): OS signal handler (SIGTERM/SIGINT)
+# - init_tracing(): global subscriber init (can only be set once per process)
+#
+# These are matched against the full mutation description shown by `cargo mutants --list`.
+
+exclude_re = [
+    "src/main\\.rs:.* in main$",
+    "src/main\\.rs:.* main with \\(\\)",
+    "src/main\\.rs:.* shutdown_signal",
+    "src/main\\.rs:.* init_tracing",
+]
