@@ -165,15 +165,14 @@ fn extract_client_ip(
     headers: &axum::http::HeaderMap,
     connect_info: Option<&ConnectInfo<SocketAddr>>,
 ) -> Option<IpAddr> {
-    if let Some(ref header_name) = config.client_ip_header {
-        if let Some(value) = headers.get(header_name.as_str()) {
-            if let Ok(s) = value.to_str() {
-                // X-Forwarded-For: client, proxy1, proxy2 — take the leftmost.
-                let ip_str = s.split(',').next().unwrap_or(s).trim();
-                if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                    return Some(ip);
-                }
-            }
+    if let Some(ref header_name) = config.client_ip_header
+        && let Some(value) = headers.get(header_name.as_str())
+        && let Ok(s) = value.to_str()
+    {
+        // X-Forwarded-For: client, proxy1, proxy2 — take the leftmost.
+        let ip_str = s.split(',').next().unwrap_or(s).trim();
+        if let Ok(ip) = ip_str.parse::<IpAddr>() {
+            return Some(ip);
         }
     }
     connect_info.map(|ConnectInfo(addr)| addr.ip())
