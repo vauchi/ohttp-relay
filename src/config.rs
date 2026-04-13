@@ -29,6 +29,16 @@ pub struct RelayConfig {
     pub rate_limit_per_sec: u32,
     /// Timeout for upstream requests.
     pub request_timeout: Duration,
+    /// Optional HTTP header name to extract the real client IP from.
+    ///
+    /// When the relay sits behind a load balancer or CDN, `ConnectInfo` yields
+    /// the proxy's IP, making per-client rate limiting useless. Set this to the
+    /// header your proxy injects (e.g. `X-Forwarded-For`, `X-Real-IP`,
+    /// `CF-Connecting-IP`) so the rate limiter keys on the real client IP.
+    ///
+    /// The operator must ensure the proxy strips or overwrites this header on
+    /// ingress — otherwise clients can spoof it.
+    pub client_ip_header: Option<String>,
 }
 
 impl RelayConfig {
@@ -64,6 +74,10 @@ impl RelayConfig {
             .parse::<u64>()
             .map_err(|e| ConfigError::parse("OHTTP_RELAY_REQUEST_TIMEOUT_SECS", e.to_string()))?;
 
+        let client_ip_header = std::env::var("OHTTP_RELAY_CLIENT_IP_HEADER")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         Ok(RelayConfig {
             listen_addr,
             gateway_url,
@@ -72,6 +86,7 @@ impl RelayConfig {
             max_key_response_bytes,
             rate_limit_per_sec,
             request_timeout: Duration::from_secs(timeout_secs),
+            client_ip_header,
         })
     }
 }
@@ -232,6 +247,10 @@ mod tests {
         );
         assert_eq!(cfg.request_timeout, std::time::Duration::from_secs(30));
         assert_eq!(cfg.gateway_url, "http://localhost:8080");
+        assert!(
+            cfg.client_ip_header.is_none(),
+            "client_ip_header should default to None"
+        );
 
         // Cleanup — leave env in a known state for other tests.
         // SAFETY: held under ENV_LOCK.

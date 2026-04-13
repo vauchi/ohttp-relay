@@ -47,6 +47,7 @@ async fn main() {
         max_key_response_bytes = config.max_key_response_bytes,
         rate_limit_per_sec = config.rate_limit_per_sec,
         request_timeout_secs = config.request_timeout.as_secs(),
+        client_ip_header = config.client_ip_header.as_deref().unwrap_or("(none — using TCP peer)"),
         "vauchi-ohttp-relay starting"
     );
 

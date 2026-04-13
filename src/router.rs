@@ -14,7 +14,7 @@
 //! - No identifying headers are forwarded upstream or downstream.
 //! - Request bodies above `max_request_bytes` are rejected before forwarding.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::{
@@ -73,12 +73,14 @@ async fn handle_ohttp_forward(
     connect_info: Option<ConnectInfo<SocketAddr>>,
     request: Request,
 ) -> Response {
-    // Rate limit by source IP if configured.
-    if let Some(ref limiter) = state.rate_limiter
-        && let Some(ConnectInfo(addr)) = connect_info
-        && !limiter.check(addr.ip())
-    {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    // Rate limit by client IP if configured.
+    if let Some(ref limiter) = state.rate_limiter {
+        let client_ip = extract_client_ip(&state.config, request.headers(), connect_info.as_ref());
+        if let Some(ip) = client_ip
+            && !limiter.check(ip)
+        {
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
+        }
     }
 
     let max = state.config.max_request_bytes;
@@ -153,6 +155,30 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Determine the client IP for rate limiting.
+///
+/// When `client_ip_header` is configured, the IP is extracted from that header
+/// (taking the first comma-separated value for `X-Forwarded-For`-style headers).
+/// Falls back to the TCP peer address from `ConnectInfo`.
+fn extract_client_ip(
+    config: &RelayConfig,
+    headers: &axum::http::HeaderMap,
+    connect_info: Option<&ConnectInfo<SocketAddr>>,
+) -> Option<IpAddr> {
+    if let Some(ref header_name) = config.client_ip_header {
+        if let Some(value) = headers.get(header_name.as_str()) {
+            if let Ok(s) = value.to_str() {
+                // X-Forwarded-For: client, proxy1, proxy2 — take the leftmost.
+                let ip_str = s.split(',').next().unwrap_or(s).trim();
+                if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    connect_info.map(|ConnectInfo(addr)| addr.ip())
+}
+
 /// Read the request body up to `max_bytes`, returning an error response if the
 /// body exceeds the limit.
 ///
@@ -216,6 +242,7 @@ mod tests {
             max_key_response_bytes: 4096,
             rate_limit_per_sec: 0, // disabled in most tests
             request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: None,
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
         AppState {
@@ -490,6 +517,7 @@ mod tests {
             max_key_response_bytes,
             rate_limit_per_sec: 0,
             request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: None,
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
         AppState {
@@ -713,6 +741,7 @@ mod tests {
             max_key_response_bytes: 4096,
             rate_limit_per_sec: 3, // very low limit for testing
             request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: None,
         };
         let rate_limiter = Some(Arc::new(crate::rate_limit::RateLimiter::new(3)));
         let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
@@ -780,6 +809,7 @@ mod tests {
             max_key_response_bytes: 4096,
             rate_limit_per_sec: 1, // extremely low limit
             request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: None,
         };
         let rate_limiter = Some(Arc::new(crate::rate_limit::RateLimiter::new(1)));
         let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
@@ -825,5 +855,104 @@ mod tests {
                 "health endpoint should never be rate-limited"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_client_ip tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_client_ip_uses_connect_info_when_no_header_configured() {
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: "http://localhost:8080".to_owned(),
+            max_request_bytes: 65536,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
+            rate_limit_per_sec: 50,
+            request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: None,
+        };
+        let headers = axum::http::HeaderMap::new();
+        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        let ci = ConnectInfo(addr);
+
+        let ip = extract_client_ip(&config, &headers, Some(&ci));
+        assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn extract_client_ip_prefers_header_over_connect_info() {
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: "http://localhost:8080".to_owned(),
+            max_request_bytes: 65536,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
+            rate_limit_per_sec: 50,
+            request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: Some("X-Real-IP".to_owned()),
+        };
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Real-IP", "203.0.113.42".parse().unwrap());
+        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        let ci = ConnectInfo(addr);
+
+        let ip = extract_client_ip(&config, &headers, Some(&ci));
+        assert_eq!(
+            ip,
+            Some("203.0.113.42".parse().unwrap()),
+            "should use IP from configured header, not ConnectInfo"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_takes_leftmost_from_forwarded_for() {
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: "http://localhost:8080".to_owned(),
+            max_request_bytes: 65536,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
+            rate_limit_per_sec: 50,
+            request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: Some("X-Forwarded-For".to_owned()),
+        };
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-Forwarded-For",
+            "198.51.100.7, 10.0.0.1, 10.0.0.2".parse().unwrap(),
+        );
+
+        let ip = extract_client_ip(&config, &headers, None);
+        assert_eq!(
+            ip,
+            Some("198.51.100.7".parse().unwrap()),
+            "should take the leftmost (original client) IP"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_falls_back_when_header_missing() {
+        let config = RelayConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            gateway_url: "http://localhost:8080".to_owned(),
+            max_request_bytes: 65536,
+            max_response_bytes: 131072,
+            max_key_response_bytes: 4096,
+            rate_limit_per_sec: 50,
+            request_timeout: std::time::Duration::from_secs(5),
+            client_ip_header: Some("X-Real-IP".to_owned()),
+        };
+        let headers = axum::http::HeaderMap::new(); // header not present
+        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        let ci = ConnectInfo(addr);
+
+        let ip = extract_client_ip(&config, &headers, Some(&ci));
+        assert_eq!(
+            ip,
+            Some("10.0.0.1".parse().unwrap()),
+            "should fall back to ConnectInfo when header is missing"
+        );
     }
 }
