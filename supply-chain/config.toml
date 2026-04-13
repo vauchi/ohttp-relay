@@ -128,7 +128,7 @@ version = "0.3.91"
 criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
-version = "0.2.183"
+version = "0.2.185"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru-slab]]
