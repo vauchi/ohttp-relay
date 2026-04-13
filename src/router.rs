@@ -890,6 +890,7 @@ mod tests {
     // extract_client_ip tests
     // -----------------------------------------------------------------------
 
+    // @scenario: rate_limit :: uses ConnectInfo when no header configured
     #[test]
     fn extract_client_ip_uses_connect_info_when_no_header_configured() {
         let config = RelayConfig {
@@ -911,6 +912,7 @@ mod tests {
         assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
     }
 
+    // @scenario: rate_limit :: prefers configured header over ConnectInfo
     #[test]
     fn extract_client_ip_prefers_header_over_connect_info() {
         let config = RelayConfig {
@@ -937,6 +939,7 @@ mod tests {
         );
     }
 
+    // @scenario: rate_limit :: takes leftmost IP from X-Forwarded-For
     #[test]
     fn extract_client_ip_takes_leftmost_from_forwarded_for() {
         let config = RelayConfig {
@@ -964,6 +967,7 @@ mod tests {
         );
     }
 
+    // @scenario: rate_limit :: falls back to ConnectInfo when header missing
     #[test]
     fn extract_client_ip_falls_back_when_header_missing() {
         let config = RelayConfig {

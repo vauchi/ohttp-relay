@@ -62,12 +62,14 @@ impl KeyConfigCache {
 mod tests {
     use super::*;
 
+    // @scenario: key_cache :: empty cache returns None
     #[test]
     fn returns_none_when_empty() {
         let cache = KeyConfigCache::new(Duration::from_secs(60));
         assert!(cache.get().is_none());
     }
 
+    // @scenario: key_cache :: cached value returned within TTL
     #[test]
     fn returns_cached_value_within_ttl() {
         let cache = KeyConfigCache::new(Duration::from_secs(60));
@@ -79,6 +81,7 @@ mod tests {
         assert_eq!(cached_fp.as_deref(), Some("fp-123"));
     }
 
+    // @scenario: key_cache :: expired entry returns None
     #[test]
     fn returns_none_after_ttl_expires() {
         let cache = KeyConfigCache::new(Duration::ZERO);
@@ -91,6 +94,7 @@ mod tests {
         );
     }
 
+    // @scenario: key_cache :: new entry overwrites previous
     #[test]
     fn overwrites_previous_entry() {
         let cache = KeyConfigCache::new(Duration::from_secs(60));
@@ -102,6 +106,7 @@ mod tests {
         assert_eq!(fp.as_deref(), Some("fp-new"));
     }
 
+    // @scenario: key_cache :: cache works without fingerprint header
     #[test]
     fn works_without_fingerprint() {
         let cache = KeyConfigCache::new(Duration::from_secs(60));
