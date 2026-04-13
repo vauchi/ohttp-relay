@@ -161,6 +161,7 @@ mod tests {
             .expect("valid https URL should be accepted");
     }
 
+    // @internal
     #[test]
     fn config_error_display_missing() {
         let err = ConfigError::missing("MY_VAR");
@@ -168,6 +169,7 @@ mod tests {
         assert_eq!(msg, "required env var MY_VAR is not set");
     }
 
+    // @internal
     #[test]
     fn config_error_display_parse() {
         let err = ConfigError::parse("MY_VAR", "not a number".to_owned());

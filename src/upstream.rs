@@ -193,12 +193,14 @@ impl std::error::Error for UpstreamError {}
 mod tests {
     use super::*;
 
+    // @internal
     #[test]
     fn display_status_error() {
         let err = UpstreamError::Status(502);
         assert_eq!(err.to_string(), "upstream returned status 502");
     }
 
+    // @internal
     #[test]
     fn display_response_too_large_without_content_length() {
         let err = UpstreamError::ResponseTooLarge {
@@ -208,6 +210,7 @@ mod tests {
         assert_eq!(err.to_string(), "upstream response exceeds 1024 byte limit");
     }
 
+    // @internal
     #[test]
     fn display_response_too_large_with_content_length() {
         let err = UpstreamError::ResponseTooLarge {

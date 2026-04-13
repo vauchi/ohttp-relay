@@ -163,6 +163,7 @@ mod tests {
         assert!(buckets.is_empty(), "stale entries should be evicted");
     }
 
+    // @internal
     #[test]
     fn evict_stale_retains_fresh_entries() {
         let limiter = RateLimiter::new(10);
