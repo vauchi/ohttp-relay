@@ -39,6 +39,10 @@ pub struct RelayConfig {
     /// The operator must ensure the proxy strips or overwrites this header on
     /// ingress — otherwise clients can spoof it.
     pub client_ip_header: Option<String>,
+    /// TTL for caching upstream `/v2/ohttp-key` responses.
+    /// Prevents thundering herd when many clients bootstrap simultaneously.
+    /// Set to 0 to disable caching. Default: 300 seconds (5 minutes).
+    pub key_cache_ttl: Duration,
 }
 
 impl RelayConfig {
@@ -78,6 +82,10 @@ impl RelayConfig {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let key_cache_ttl_secs = env_or("OHTTP_RELAY_KEY_CACHE_TTL_SECS", "300")
+            .parse::<u64>()
+            .map_err(|e| ConfigError::parse("OHTTP_RELAY_KEY_CACHE_TTL_SECS", e.to_string()))?;
+
         Ok(RelayConfig {
             listen_addr,
             gateway_url,
@@ -87,6 +95,7 @@ impl RelayConfig {
             rate_limit_per_sec,
             request_timeout: Duration::from_secs(timeout_secs),
             client_ip_header,
+            key_cache_ttl: Duration::from_secs(key_cache_ttl_secs),
         })
     }
 }
@@ -250,6 +259,11 @@ mod tests {
         assert!(
             cfg.client_ip_header.is_none(),
             "client_ip_header should default to None"
+        );
+        assert_eq!(
+            cfg.key_cache_ttl,
+            std::time::Duration::from_secs(300),
+            "default key_cache_ttl should be 300 seconds"
         );
 
         // Cleanup — leave env in a known state for other tests.

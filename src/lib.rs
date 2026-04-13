@@ -20,6 +20,7 @@
 //! - No state is stored between requests.
 
 pub mod config;
+pub mod key_cache;
 pub mod rate_limit;
 pub mod router;
 pub mod upstream;

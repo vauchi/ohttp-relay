@@ -28,6 +28,7 @@ use axum::{
 use tracing::{debug, warn};
 
 use crate::config::RelayConfig;
+use crate::key_cache::KeyConfigCache;
 use crate::rate_limit::RateLimiter;
 use crate::upstream::UpstreamClient;
 
@@ -38,6 +39,8 @@ pub struct AppState {
     pub upstream: UpstreamClient,
     /// Per-IP rate limiter for the OHTTP forward endpoint. `None` if disabled.
     pub rate_limiter: Option<Arc<RateLimiter>>,
+    /// TTL cache for upstream OHTTP key config. `None` if disabled (TTL = 0).
+    pub key_cache: Option<Arc<KeyConfigCache>>,
 }
 
 /// Build the router with all routes wired up.
@@ -119,7 +122,17 @@ async fn handle_ohttp_forward(
 /// Clients need the gateway's public key to construct OHTTP requests.
 /// This endpoint solves the key bootstrap problem without exposing the
 /// gateway address to clients.
+///
+/// Responses are cached with a configurable TTL to avoid a thundering herd
+/// on the upstream during mass client bootstrap.
 async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
+    // Serve from cache if available.
+    if let Some(ref cache) = state.key_cache {
+        if let Some((body, fingerprint)) = cache.get() {
+            return build_key_response(body, fingerprint);
+        }
+    }
+
     match state
         .upstream
         .get_ohttp_key(
@@ -129,26 +142,35 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
         .await
     {
         Ok(key_resp) => {
-            let mut response = (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/ohttp-keys")],
-                key_resp.body,
-            )
-                .into_response();
-            if let Some(fingerprint) = key_resp.key_fingerprint
-                && let Ok(value) = header::HeaderValue::from_str(&fingerprint)
-            {
-                response
-                    .headers_mut()
-                    .insert(header::HeaderName::from_static("key-fingerprint"), value);
+            // Populate cache for subsequent requests.
+            if let Some(ref cache) = state.key_cache {
+                cache.set(key_resp.body.clone(), key_resp.key_fingerprint.clone());
             }
-            response
+            build_key_response(key_resp.body, key_resp.key_fingerprint)
         }
         Err(e) => {
             warn!(error = %e, "upstream gateway error on key fetch");
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
+}
+
+/// Build a `200 OK` response with the OHTTP key config body and optional fingerprint.
+fn build_key_response(body: Bytes, fingerprint: Option<String>) -> Response {
+    let mut response = (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/ohttp-keys")],
+        body,
+    )
+        .into_response();
+    if let Some(fp) = fingerprint
+        && let Ok(value) = header::HeaderValue::from_str(&fp)
+    {
+        response
+            .headers_mut()
+            .insert(header::HeaderName::from_static("key-fingerprint"), value);
+    }
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -242,12 +264,14 @@ mod tests {
             rate_limit_per_sec: 0, // disabled in most tests
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: None,
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
         AppState {
             config,
             upstream,
             rate_limiter: None,
+            key_cache: None,
         }
     }
 
@@ -517,12 +541,14 @@ mod tests {
             rate_limit_per_sec: 0,
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: None,
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
         AppState {
             config,
             upstream,
             rate_limiter: None,
+            key_cache: None,
         }
     }
 
@@ -741,6 +767,7 @@ mod tests {
             rate_limit_per_sec: 3, // very low limit for testing
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: None,
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let rate_limiter = Some(Arc::new(crate::rate_limit::RateLimiter::new(3)));
         let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
@@ -748,6 +775,7 @@ mod tests {
             config,
             upstream,
             rate_limiter,
+            key_cache: None,
         };
         let app = build_router(state);
 
@@ -809,6 +837,7 @@ mod tests {
             rate_limit_per_sec: 1, // extremely low limit
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: None,
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let rate_limiter = Some(Arc::new(crate::rate_limit::RateLimiter::new(1)));
         let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
@@ -816,6 +845,7 @@ mod tests {
             config,
             upstream,
             rate_limiter,
+            key_cache: None,
         };
         let app = build_router(state);
 
@@ -871,6 +901,7 @@ mod tests {
             rate_limit_per_sec: 50,
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: None,
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let headers = axum::http::HeaderMap::new();
         let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
@@ -891,6 +922,7 @@ mod tests {
             rate_limit_per_sec: 50,
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: Some("X-Real-IP".to_owned()),
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("X-Real-IP", "203.0.113.42".parse().unwrap());
@@ -916,6 +948,7 @@ mod tests {
             rate_limit_per_sec: 50,
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: Some("X-Forwarded-For".to_owned()),
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
@@ -942,6 +975,7 @@ mod tests {
             rate_limit_per_sec: 50,
             request_timeout: std::time::Duration::from_secs(5),
             client_ip_header: Some("X-Real-IP".to_owned()),
+            key_cache_ttl: std::time::Duration::ZERO,
         };
         let headers = axum::http::HeaderMap::new(); // header not present
         let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
