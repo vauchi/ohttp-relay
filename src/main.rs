@@ -16,6 +16,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -50,7 +51,21 @@ async fn main() {
     );
 
     let rate_limiter = if config.rate_limit_per_sec > 0 {
-        Some(Arc::new(RateLimiter::new(config.rate_limit_per_sec)))
+        let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_sec));
+
+        // Periodically evict stale rate-limit entries to prevent unbounded
+        // memory growth from diverse source IPs.
+        let limiter_cleanup = Arc::clone(&limiter);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(600));
+            interval.tick().await; // skip initial immediate tick
+            loop {
+                interval.tick().await;
+                limiter_cleanup.evict_stale(Duration::from_secs(1800));
+            }
+        });
+
+        Some(limiter)
     } else {
         info!("rate limiting disabled (OHTTP_RELAY_RATE_LIMIT_PER_SEC=0)");
         None
