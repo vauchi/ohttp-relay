@@ -37,10 +37,10 @@ impl KeyConfigCache {
     /// Return the cached key config if it exists and is still fresh.
     pub fn get(&self) -> Option<(Bytes, Option<String>)> {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = guard.as_ref() {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return Some((entry.body.clone(), entry.fingerprint.clone()));
-            }
+        if let Some(entry) = guard.as_ref()
+            && entry.fetched_at.elapsed() < self.ttl
+        {
+            return Some((entry.body.clone(), entry.fingerprint.clone()));
         }
         None
     }

@@ -127,10 +127,10 @@ async fn handle_ohttp_forward(
 /// on the upstream during mass client bootstrap.
 async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
     // Serve from cache if available.
-    if let Some(ref cache) = state.key_cache {
-        if let Some((body, fingerprint)) = cache.get() {
-            return build_key_response(body, fingerprint);
-        }
+    if let Some(ref cache) = state.key_cache
+        && let Some((body, fingerprint)) = cache.get()
+    {
+        return build_key_response(body, fingerprint);
     }
 
     match state
