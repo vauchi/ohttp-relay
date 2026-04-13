@@ -196,6 +196,11 @@ fn extract_client_ip(
         if let Ok(ip) = ip_str.parse::<IpAddr>() {
             return Some(ip);
         }
+        debug!(
+            header = header_name.as_str(),
+            value = s,
+            "client IP header present but unparsable — falling back to ConnectInfo"
+        );
     }
     connect_info.map(|ConnectInfo(addr)| addr.ip())
 }
@@ -890,10 +895,8 @@ mod tests {
     // extract_client_ip tests
     // -----------------------------------------------------------------------
 
-    // @scenario: rate_limit :: uses ConnectInfo when no header configured
-    #[test]
-    fn extract_client_ip_uses_connect_info_when_no_header_configured() {
-        let config = RelayConfig {
+    fn ip_config(header: Option<&str>) -> RelayConfig {
+        RelayConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             gateway_url: "http://localhost:8080".to_owned(),
             max_request_bytes: 65536,
@@ -901,12 +904,17 @@ mod tests {
             max_key_response_bytes: 4096,
             rate_limit_per_sec: 50,
             request_timeout: std::time::Duration::from_secs(5),
-            client_ip_header: None,
+            client_ip_header: header.map(str::to_owned),
             key_cache_ttl: std::time::Duration::ZERO,
-        };
+        }
+    }
+
+    // @scenario: rate_limit :: uses ConnectInfo when no header configured
+    #[test]
+    fn extract_client_ip_uses_connect_info_when_no_header_configured() {
+        let config = ip_config(None);
         let headers = axum::http::HeaderMap::new();
-        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
-        let ci = ConnectInfo(addr);
+        let ci = ConnectInfo("10.0.0.1:1234".parse::<SocketAddr>().unwrap());
 
         let ip = extract_client_ip(&config, &headers, Some(&ci));
         assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
@@ -915,81 +923,57 @@ mod tests {
     // @scenario: rate_limit :: prefers configured header over ConnectInfo
     #[test]
     fn extract_client_ip_prefers_header_over_connect_info() {
-        let config = RelayConfig {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
-            gateway_url: "http://localhost:8080".to_owned(),
-            max_request_bytes: 65536,
-            max_response_bytes: 131072,
-            max_key_response_bytes: 4096,
-            rate_limit_per_sec: 50,
-            request_timeout: std::time::Duration::from_secs(5),
-            client_ip_header: Some("X-Real-IP".to_owned()),
-            key_cache_ttl: std::time::Duration::ZERO,
-        };
+        let config = ip_config(Some("X-Real-IP"));
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("X-Real-IP", "203.0.113.42".parse().unwrap());
-        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
-        let ci = ConnectInfo(addr);
+        let ci = ConnectInfo("10.0.0.1:1234".parse::<SocketAddr>().unwrap());
 
         let ip = extract_client_ip(&config, &headers, Some(&ci));
-        assert_eq!(
-            ip,
-            Some("203.0.113.42".parse().unwrap()),
-            "should use IP from configured header, not ConnectInfo"
-        );
+        assert_eq!(ip, Some("203.0.113.42".parse().unwrap()));
     }
 
     // @scenario: rate_limit :: takes leftmost IP from X-Forwarded-For
     #[test]
     fn extract_client_ip_takes_leftmost_from_forwarded_for() {
-        let config = RelayConfig {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
-            gateway_url: "http://localhost:8080".to_owned(),
-            max_request_bytes: 65536,
-            max_response_bytes: 131072,
-            max_key_response_bytes: 4096,
-            rate_limit_per_sec: 50,
-            request_timeout: std::time::Duration::from_secs(5),
-            client_ip_header: Some("X-Forwarded-For".to_owned()),
-            key_cache_ttl: std::time::Duration::ZERO,
-        };
+        let config = ip_config(Some("X-Forwarded-For"));
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "X-Forwarded-For",
-            "198.51.100.7, 10.0.0.1, 10.0.0.2".parse().unwrap(),
-        );
+        headers.insert("X-Forwarded-For", "198.51.100.7, 10.0.0.1".parse().unwrap());
 
         let ip = extract_client_ip(&config, &headers, None);
-        assert_eq!(
-            ip,
-            Some("198.51.100.7".parse().unwrap()),
-            "should take the leftmost (original client) IP"
-        );
+        assert_eq!(ip, Some("198.51.100.7".parse().unwrap()));
     }
 
     // @scenario: rate_limit :: falls back to ConnectInfo when header missing
     #[test]
     fn extract_client_ip_falls_back_when_header_missing() {
-        let config = RelayConfig {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
-            gateway_url: "http://localhost:8080".to_owned(),
-            max_request_bytes: 65536,
-            max_response_bytes: 131072,
-            max_key_response_bytes: 4096,
-            rate_limit_per_sec: 50,
-            request_timeout: std::time::Duration::from_secs(5),
-            client_ip_header: Some("X-Real-IP".to_owned()),
-            key_cache_ttl: std::time::Duration::ZERO,
-        };
-        let headers = axum::http::HeaderMap::new(); // header not present
-        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
-        let ci = ConnectInfo(addr);
+        let config = ip_config(Some("X-Real-IP"));
+        let headers = axum::http::HeaderMap::new();
+        let ci = ConnectInfo("10.0.0.1:1234".parse::<SocketAddr>().unwrap());
 
         let ip = extract_client_ip(&config, &headers, Some(&ci));
-        assert_eq!(
-            ip,
-            Some("10.0.0.1".parse().unwrap()),
-            "should fall back to ConnectInfo when header is missing"
-        );
+        assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
+    }
+
+    // @scenario: rate_limit :: falls back to ConnectInfo on malformed header value
+    #[test]
+    fn extract_client_ip_falls_back_on_malformed_header() {
+        let config = ip_config(Some("X-Real-IP"));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Real-IP", "not-an-ip-address".parse().unwrap());
+        let ci = ConnectInfo("10.0.0.1:1234".parse::<SocketAddr>().unwrap());
+
+        let ip = extract_client_ip(&config, &headers, Some(&ci));
+        assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
+    }
+
+    // @scenario: rate_limit :: parses IPv6 address from header
+    #[test]
+    fn extract_client_ip_handles_ipv6() {
+        let config = ip_config(Some("X-Forwarded-For"));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", "2001:db8::1, 10.0.0.1".parse().unwrap());
+
+        let ip = extract_client_ip(&config, &headers, None);
+        assert_eq!(ip, Some("2001:db8::1".parse().unwrap()));
     }
 }
