@@ -270,4 +270,55 @@ mod tests {
         // SAFETY: held under ENV_LOCK.
         unsafe { std::env::remove_var("OHTTP_RELAY_GATEWAY_URL") };
     }
+
+    // @scenario: config :: non-empty client_ip_header is preserved
+    #[test]
+    fn from_env_preserves_non_empty_client_ip_header() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // SAFETY: held under ENV_LOCK.
+        unsafe {
+            std::env::set_var("OHTTP_RELAY_GATEWAY_URL", "http://localhost:8080");
+            std::env::set_var("OHTTP_RELAY_CLIENT_IP_HEADER", "X-Real-IP");
+        }
+
+        let cfg = RelayConfig::from_env().expect("config should succeed");
+        assert_eq!(
+            cfg.client_ip_header.as_deref(),
+            Some("X-Real-IP"),
+            "non-empty client_ip_header should be preserved"
+        );
+
+        // Cleanup.
+        // SAFETY: held under ENV_LOCK.
+        unsafe {
+            std::env::remove_var("OHTTP_RELAY_GATEWAY_URL");
+            std::env::remove_var("OHTTP_RELAY_CLIENT_IP_HEADER");
+        }
+    }
+
+    // @scenario: config :: empty client_ip_header is filtered out
+    #[test]
+    fn from_env_filters_empty_client_ip_header() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // SAFETY: held under ENV_LOCK.
+        unsafe {
+            std::env::set_var("OHTTP_RELAY_GATEWAY_URL", "http://localhost:8080");
+            std::env::set_var("OHTTP_RELAY_CLIENT_IP_HEADER", "");
+        }
+
+        let cfg = RelayConfig::from_env().expect("config should succeed");
+        assert!(
+            cfg.client_ip_header.is_none(),
+            "empty client_ip_header should be filtered to None"
+        );
+
+        // Cleanup.
+        // SAFETY: held under ENV_LOCK.
+        unsafe {
+            std::env::remove_var("OHTTP_RELAY_GATEWAY_URL");
+            std::env::remove_var("OHTTP_RELAY_CLIENT_IP_HEADER");
+        }
+    }
 }

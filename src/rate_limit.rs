@@ -163,6 +163,27 @@ mod tests {
         assert!(buckets.is_empty(), "stale entries should be evicted");
     }
 
+    // @scenario: rate_limit :: evict with nonzero max_age removes old entries
+    #[test]
+    fn evict_stale_removes_entries_older_than_nonzero_max_age() {
+        let limiter = RateLimiter::new(10);
+        let ip: IpAddr = "10.0.0.8".parse().unwrap();
+
+        limiter.check(ip);
+
+        // Wait past the max_age threshold.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // Entry is ~60ms old; evict anything older than 30ms.
+        limiter.evict_stale(std::time::Duration::from_millis(30));
+
+        let buckets = limiter.buckets.lock().unwrap();
+        assert!(
+            !buckets.contains_key(&ip),
+            "entry older than max_age should be evicted"
+        );
+    }
+
     // @internal
     #[test]
     fn evict_stale_retains_fresh_entries() {

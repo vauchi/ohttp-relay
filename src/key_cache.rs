@@ -106,6 +106,24 @@ mod tests {
         assert_eq!(fp.as_deref(), Some("fp-new"));
     }
 
+    // @scenario: key_cache :: entry expires after non-zero TTL elapses
+    #[test]
+    fn returns_none_after_nonzero_ttl_elapses() {
+        let cache = KeyConfigCache::new(Duration::from_millis(50));
+        cache.set(Bytes::from_static(b"expiring"), Some("fp".to_owned()));
+
+        // Fresh — should hit.
+        assert!(cache.get().is_some(), "fresh entry should be cached");
+
+        // Wait past TTL.
+        std::thread::sleep(Duration::from_millis(60));
+
+        assert!(
+            cache.get().is_none(),
+            "entry past TTL should not be returned"
+        );
+    }
+
     // @scenario: key_cache :: cache works without fingerprint header
     #[test]
     fn works_without_fingerprint() {
