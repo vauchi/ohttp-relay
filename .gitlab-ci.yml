@@ -117,6 +117,9 @@ mutation:nightly:
 # Fuzz Stage (nightly, libfuzzer via cargo-fuzz)
 # ============================================================
 
+# Schedule-only libfuzzer run. Same advisory rationale as relay:
+# fuzz crashes are reviewed offline from the artifacts upload, not
+# gated in the pipeline. Audited 2026-04-22 T1.2/T2.5.
 fuzz:nightly:
   extends: [.rust-runner]
   timeout: 12h
@@ -214,6 +217,11 @@ secret_detection:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
+# Same advisory rationale as relay's container_scanning: tag and
+# schedule pipelines block on findings, main is advisory because
+# transitive CVEs land continuously. **Open policy question**: dashboard
+# routing on main — see relay's container_scanning comment for the
+# full audit. Audited 2026-04-22 T1.2/T2.5.
 container_scanning:
   stage: scan
   needs: ["build:docker"]
@@ -293,6 +301,10 @@ build:docker:
 # with a mock upstream gateway. Tests throughput, latency, and
 # rate limiting under sustained load.
 # Thresholds: p95 forward < 500ms, p95 key < 300ms, >95% success.
+# allow_failure: true at L349 because load thresholds depend on the
+# self-hosted runner's available resources, which fluctuate. The k6
+# summary.json artifact is the source of truth for trend analysis.
+# Audited 2026-04-22 T1.2/T2.5.
 load:k6:
   extends: [.linux-runner, .timeout-standard]
   stage: load
