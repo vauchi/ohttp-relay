@@ -303,6 +303,10 @@ criteria = "safe-to-deploy"
 version = "0.1.36"
 criteria = "safe-to-deploy"
 
+[[exemptions.tracing-flame]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.tracing-subscriber]]
 version = "0.3.23"
 criteria = "safe-to-deploy"
