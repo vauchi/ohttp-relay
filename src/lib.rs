@@ -20,6 +20,8 @@
 //! - No state is stored between requests.
 
 pub mod config;
+#[cfg(feature = "flame")]
+pub mod flame;
 pub mod key_cache;
 pub mod rate_limit;
 pub mod router;

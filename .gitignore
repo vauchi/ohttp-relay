@@ -13,6 +13,9 @@
 .DS_Store
 Thumbs.db
 
+# Profiling artifacts (tracing-flame folded traces, rendered SVGs)
+/artifacts/
+
 # CI local testing
 .gitlab-ci-local/
 

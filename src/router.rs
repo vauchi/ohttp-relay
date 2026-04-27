@@ -71,6 +71,7 @@ async fn handle_health() -> impl IntoResponse {
 ///
 /// Rate-limited per source IP when a rate limiter is configured. The IP is
 /// used only for rate limiting — it is never logged or forwarded.
+#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.forward")]
 async fn handle_ohttp_forward(
     State(state): State<AppState>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
@@ -125,6 +126,7 @@ async fn handle_ohttp_forward(
 ///
 /// Responses are cached with a configurable TTL to avoid a thundering herd
 /// on the upstream during mass client bootstrap.
+#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.key")]
 async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
     // Serve from cache if available.
     if let Some(ref cache) = state.key_cache

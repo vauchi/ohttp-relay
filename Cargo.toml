@@ -9,12 +9,19 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Minimal OHTTP forwarding proxy for Vauchi relay"
 
+[features]
+default = []
+# Profiling: install a tracing-flame layer at startup. Writes a `.folded`
+# trace to `$VAUCHI_FLAME_OUT` (default: `ohttp-relay/artifacts/flame/`).
+flame = ["dep:tracing-flame"]
+
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-flame = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

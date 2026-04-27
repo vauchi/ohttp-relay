@@ -30,6 +30,10 @@ use vauchi_ohttp_relay::upstream::UpstreamClient;
 
 #[tokio::main]
 async fn main() {
+    // With the `flame` feature, the flame init replaces `init_tracing()`.
+    #[cfg(feature = "flame")]
+    vauchi_ohttp_relay::flame::init();
+    #[cfg(not(feature = "flame"))]
     init_tracing();
 
     let config = match RelayConfig::from_env() {
@@ -139,6 +143,7 @@ async fn shutdown_signal() {
     info!("shutdown signal received");
 }
 
+#[cfg(not(feature = "flame"))]
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
 
