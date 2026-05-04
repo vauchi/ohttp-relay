@@ -278,6 +278,12 @@ build:docker:
       if [ -n "$CI_REGISTRY_PASSWORD" ]; then
         echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
       fi
+    # Authenticate the in-build docker daemon (dind) against the
+    # dependency proxy. Without this, in-build pulls of
+    # `${HUB}/rust:1.93-bookworm` come through anonymous and the
+    # proxy returns 403 Forbidden (caught on relay!270 pipeline
+    # 2497760220 even after the FROM-prefix fix landed).
+    - echo "$CI_DEPENDENCY_PROXY_PASSWORD" | docker login -u "$CI_DEPENDENCY_PROXY_USER" --password-stdin "$CI_DEPENDENCY_PROXY_SERVER"
     - BUILD_INFO="{\"sha\":\"$CI_COMMIT_SHA\",\"short_sha\":\"$CI_COMMIT_SHORT_SHA\",\"ref\":\"$CI_COMMIT_REF_NAME\",\"built\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"pipeline\":\"$CI_PIPELINE_URL\"}"
     # --pull forces a fresh base-image fetch on every build so upstream
     # security patches (e.g. libc6 CVEs) land in the next image.
