@@ -282,7 +282,12 @@ build:docker:
     # --pull forces a fresh base-image fetch on every build so upstream
     # security patches (e.g. libc6 CVEs) land in the next image.
     # --cache-from still reuses our own intermediate layers for speed.
-    - docker build --pull --build-arg BUILD_INFO="$BUILD_INFO" --cache-from $CI_REGISTRY_IMAGE:latest -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    # --build-arg HUB= routes the Dockerfile's `FROM rust:1.93-bookworm`
+    # stages through GitLab's dependency proxy. Bare Docker Hub pulls
+    # from inside `docker build` are anonymous and rate-limited.
+    # Default in the Dockerfile is `docker.io/library` so local
+    # `docker build .` still works without args.
+    - docker build --pull --build-arg HUB="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}" --build-arg BUILD_INFO="$BUILD_INFO" --cache-from $CI_REGISTRY_IMAGE:latest -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
     - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:latest
     - |
       if [ -n "$CI_REGISTRY_PASSWORD" ]; then
