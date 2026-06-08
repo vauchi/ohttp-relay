@@ -52,10 +52,6 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
-
 /// `GET /health` — always returns 200 OK with a plain-text body.
 ///
 /// Does not call the upstream gateway; only verifies this process is alive.
@@ -77,7 +73,6 @@ async fn handle_ohttp_forward(
     connect_info: Option<ConnectInfo<SocketAddr>>,
     request: Request,
 ) -> Response {
-    // Rate limit by client IP if configured.
     if let Some(ref limiter) = state.rate_limiter {
         let client_ip = extract_client_ip(&state.config, request.headers(), connect_info.as_ref());
         if let Some(ip) = client_ip
@@ -128,7 +123,6 @@ async fn handle_ohttp_forward(
 /// on the upstream during mass client bootstrap.
 #[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.key")]
 async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
-    // Serve from cache if available.
     if let Some(ref cache) = state.key_cache
         && let Some((body, fingerprint)) = cache.get()
     {
@@ -144,7 +138,6 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
         .await
     {
         Ok(key_resp) => {
-            // Populate cache for subsequent requests.
             if let Some(ref cache) = state.key_cache {
                 cache.set(key_resp.body.clone(), key_resp.key_fingerprint.clone());
             }
@@ -174,10 +167,6 @@ fn build_key_response(body: Bytes, fingerprint: Option<String>) -> Response {
     }
     response
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Determine the client IP for rate limiting.
 ///
@@ -245,10 +234,6 @@ async fn read_bounded_body(request: Request, max_bytes: usize) -> Result<Bytes, 
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 // INLINE_TEST_REQUIRED: router tests need oneshot() on the built router which
 // requires access to private handler functions and AppState construction

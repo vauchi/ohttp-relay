@@ -126,7 +126,6 @@ async fn read_bounded_response(
     mut resp: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Bytes, UpstreamError> {
-    // Fast-reject via Content-Length header if present.
     if let Some(content_length) = resp.content_length()
         && content_length > max_bytes as u64
     {
@@ -136,7 +135,6 @@ async fn read_bounded_response(
         });
     }
 
-    // Read chunks incrementally, enforcing the size limit.
     let mut buf = Vec::with_capacity(max_bytes.min(8192));
     while let Some(chunk) = resp.chunk().await.map_err(UpstreamError::Request)? {
         buf.extend_from_slice(&chunk);
