@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[default.extend-words]
+# flate2 is a Rust compression crate name (not a typo for "flat")
+flate = "flate"
+# writeable is a crate name used by ureq's dependency tree
+writeable = "writeable"
