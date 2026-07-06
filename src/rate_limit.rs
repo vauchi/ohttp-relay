@@ -16,6 +16,7 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::Instant;
 
+// TODO(PFC): hidden mutable per-IP state and non-injectable clock — see 2026-07-06-ohttp-relay-pfc-violations O2
 /// A per-IP token bucket rate limiter.
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -50,7 +51,7 @@ impl RateLimiter {
     ///
     /// Returns `true` if the request is allowed, `false` if rate-limited.
     pub fn check(&self, ip: IpAddr) -> bool {
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner()); // TODO(PFC): silent mutex poisoning recovery — see 2026-07-06-ohttp-relay-pfc-violations O7
         let now = Instant::now();
 
         let bucket = buckets.entry(ip).or_insert_with(|| TokenBucket {
@@ -75,7 +76,7 @@ impl RateLimiter {
     ///
     /// Should be called periodically to prevent unbounded memory growth.
     pub fn evict_stale(&self, max_age: std::time::Duration) {
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner()); // TODO(PFC): silent mutex poisoning recovery — see 2026-07-06-ohttp-relay-pfc-violations O7
         let now = Instant::now();
         buckets.retain(|_, bucket| now.duration_since(bucket.last_refill) < max_age);
     }

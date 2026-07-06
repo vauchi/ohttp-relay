@@ -19,6 +19,7 @@ struct CachedEntry {
     fetched_at: Instant,
 }
 
+// TODO(PFC): hidden mutable cache state + non-injectable clock — see 2026-07-06-ohttp-relay-pfc-violations O1
 /// In-memory TTL cache for the upstream OHTTP key config.
 pub struct KeyConfigCache {
     ttl: Duration,
@@ -36,7 +37,7 @@ impl KeyConfigCache {
 
     /// Return the cached key config if it exists and is still fresh.
     pub fn get(&self) -> Option<(Bytes, Option<String>)> {
-        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner()); // TODO(PFC): silent mutex poisoning recovery — see 2026-07-06-ohttp-relay-pfc-violations O7
         if let Some(entry) = guard.as_ref()
             && entry.fetched_at.elapsed() < self.ttl
         {
@@ -47,7 +48,7 @@ impl KeyConfigCache {
 
     /// Store a fresh key config response.
     pub fn set(&self, body: Bytes, fingerprint: Option<String>) {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner()); // TODO(PFC): silent mutex poisoning recovery — see 2026-07-06-ohttp-relay-pfc-violations O7
         *guard = Some(CachedEntry {
             body,
             fingerprint,

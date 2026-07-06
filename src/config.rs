@@ -46,6 +46,7 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
+    // TODO(PFC): loads configuration directly from std::env::var — see 2026-07-06-ohttp-relay-pfc-violations O3
     /// Load configuration from environment variables.
     ///
     /// Returns an error if any required variable is missing or malformed.

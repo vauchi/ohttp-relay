@@ -51,6 +51,7 @@ impl UpstreamClient {
     /// Only the raw bytes are sent — no headers from the original client
     /// request are forwarded. The response body is returned verbatim.
     ///
+    // TODO(PFC): upstream call logs internally — see 2026-07-06-ohttp-relay-pfc-violations O6
     /// `max_response_bytes` limits how much data we read from the upstream
     /// response, protecting against a compromised upstream returning gigabytes.
     pub async fn post_ohttp(
@@ -85,6 +86,7 @@ impl UpstreamClient {
     /// No client-derived data is included in this request.
     /// Returns the key body and, if present, the `Key-Fingerprint` header value.
     ///
+    // TODO(PFC): upstream call logs internally — see 2026-07-06-ohttp-relay-pfc-violations O6
     /// `max_key_response_bytes` limits key config reads (typically ~100 bytes,
     /// default limit 4 KiB).
     pub async fn get_ohttp_key(

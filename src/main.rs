@@ -28,6 +28,7 @@ use vauchi_ohttp_relay::rate_limit::RateLimiter;
 use vauchi_ohttp_relay::router::{AppState, build_router};
 use vauchi_ohttp_relay::upstream::UpstreamClient;
 
+// TODO(PFC): main() is a long orchestrator — see 2026-07-06-ohttp-relay-pfc-violations O8
 #[tokio::main]
 async fn main() {
     // With the `flame` feature, the flame init replaces `init_tracing()`.
@@ -116,6 +117,7 @@ async fn main() {
     info!("vauchi-ohttp-relay stopped");
 }
 
+// TODO(PFC): shutdown handler logs internally — see 2026-07-06-ohttp-relay-pfc-violations O9
 /// Wait for SIGTERM or SIGINT and return.
 async fn shutdown_signal() {
     let ctrl_c = async {

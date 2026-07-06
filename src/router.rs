@@ -1,3 +1,4 @@
+// allow(large_file)
 // SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -161,6 +162,7 @@ fn build_key_response(body: Bytes, fingerprint: Option<String>) -> Response {
     response
 }
 
+// TODO(PFC): IP parsing mixed with debug! logging — see 2026-07-06-ohttp-relay-pfc-violations O4
 /// Determine the client IP for rate limiting.
 ///
 /// When `client_ip_header` is configured, the IP is extracted from that header
@@ -200,6 +202,7 @@ fn extract_client_ip(
 /// with a size limit is treated as 413 — the overwhelming cause is a
 /// `LengthLimitError`, and treating the rare body-read failure the same way
 /// avoids relying on fragile error-message string matching.
+// TODO(PFC): body-limit logic emits warn! internally — see 2026-07-06-ohttp-relay-pfc-violations O5
 async fn read_bounded_body(request: Request, max_bytes: usize) -> Result<Bytes, Response> {
     // Fast-reject: if Content-Length is present and already too large, skip reading.
     if let Some(content_length) = request.headers().get(header::CONTENT_LENGTH)
@@ -228,6 +231,7 @@ async fn read_bounded_body(request: Request, max_bytes: usize) -> Result<Bytes, 
     }
 }
 
+// TODO(PFC): production and tests mixed in one large file — see 2026-07-06-ohttp-relay-pfc-violations O11
 // INLINE_TEST_REQUIRED: router tests need oneshot() on the built router which
 // requires access to private handler functions and AppState construction
 #[cfg(test)]

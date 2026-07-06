@@ -48,6 +48,7 @@ pub fn init() {
     eprintln!("[flame] writing folded trace -> {}", path.display());
 }
 
+// TODO(PFC): output_path() reads env and SystemTime::now() — see 2026-07-06-ohttp-relay-pfc-violations O10
 fn output_path() -> PathBuf {
     if let Ok(p) = std::env::var("VAUCHI_FLAME_OUT") {
         return PathBuf::from(p);
