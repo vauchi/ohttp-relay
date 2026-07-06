@@ -18,10 +18,21 @@ flame = ["dep:tracing-flame"]
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Sync HTTP client for upstream gateway calls. Wrapped in spawn_blocking so the
+# async runtime is never blocked. Much smaller dependency tree than reqwest.
+ureq = { version = "3", default-features = false, features = ["json", "rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-flame = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+# Test-only HTTP client for hitting the real TCP listener in router tests.
+# These crates are already pulled in transitively by axum; listing them here
+# makes the test helper's imports explicit without adding new dependency weight.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+http-body-util = "0.1"

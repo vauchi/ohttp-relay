@@ -93,11 +93,7 @@ async fn handle_ohttp_forward(
 
     match state
         .upstream
-        .post_ohttp(
-            body,
-            state.config.request_timeout,
-            state.config.max_response_bytes,
-        )
+        .post_ohttp(body, state.config.max_response_bytes)
         .await
     {
         Ok(response_bytes) => (
@@ -131,10 +127,7 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
 
     match state
         .upstream
-        .get_ohttp_key(
-            state.config.request_timeout,
-            state.config.max_key_response_bytes,
-        )
+        .get_ohttp_key(state.config.max_key_response_bytes)
         .await
     {
         Ok(key_resp) => {
@@ -245,6 +238,63 @@ mod tests {
 
     use super::*;
     use crate::upstream::UpstreamClient;
+
+    /// Minimal HTTP/1.1 client for tests that need to hit the real TCP listener.
+    /// Replaces the previous `reqwest` usage so the crate can drop that dependency.
+    mod test_client {
+        use axum::body::Bytes;
+        use http_body_util::Full;
+        use hyper::Request;
+        use hyper_util::client::legacy::Client;
+        use hyper_util::rt::TokioExecutor;
+
+        type HttpConnector = hyper_util::client::legacy::connect::HttpConnector;
+
+        pub struct TestClient {
+            client: Client<HttpConnector, Full<Bytes>>,
+        }
+
+        impl TestClient {
+            pub fn new() -> Self {
+                let connector = HttpConnector::new();
+                let client = Client::builder(TokioExecutor::new()).build(connector);
+                Self { client }
+            }
+
+            pub async fn post(
+                &self,
+                url: impl AsRef<str>,
+                content_type: &str,
+                body: Vec<u8>,
+            ) -> hyper::Response<hyper::body::Incoming> {
+                let request = Request::builder()
+                    .method("POST")
+                    .uri(url.as_ref())
+                    .header(hyper::header::CONTENT_TYPE, content_type)
+                    .body(Full::new(Bytes::from(body)))
+                    .expect("valid test request");
+                self.client
+                    .request(request)
+                    .await
+                    .expect("test request should succeed")
+            }
+
+            pub async fn get(
+                &self,
+                url: impl AsRef<str>,
+            ) -> hyper::Response<hyper::body::Incoming> {
+                let request = Request::builder()
+                    .method("GET")
+                    .uri(url.as_ref())
+                    .body(Full::new(Bytes::new()))
+                    .expect("valid test request");
+                self.client
+                    .request(request)
+                    .await
+                    .expect("test request should succeed")
+            }
+        }
+    }
 
     fn make_state(max_request_bytes: usize, gateway_url: &str) -> AppState {
         let config = RelayConfig {
@@ -782,19 +832,13 @@ mod tests {
             .unwrap();
         });
 
-        let client = reqwest::Client::new();
+        let client = test_client::TestClient::new();
         let url = format!("http://{relay_addr}/v2/ohttp");
 
         // Send requests up to the burst limit — should all succeed (502 from
         // unreachable upstream, but NOT 429).
         for i in 0..3 {
-            let resp = client
-                .post(&url)
-                .header("Content-Type", "message/ohttp-req")
-                .body(vec![0x01])
-                .send()
-                .await
-                .unwrap();
+            let resp = client.post(&url, "message/ohttp-req", vec![0x01]).await;
             assert_ne!(
                 resp.status().as_u16(),
                 429,
@@ -803,13 +847,7 @@ mod tests {
         }
 
         // Next request should be rate-limited.
-        let resp = client
-            .post(&url)
-            .header("Content-Type", "message/ohttp-req")
-            .body(vec![0x01])
-            .send()
-            .await
-            .unwrap();
+        let resp = client.post(&url, "message/ohttp-req", vec![0x01]).await;
         assert_eq!(
             resp.status().as_u16(),
             429,
@@ -852,24 +890,20 @@ mod tests {
             .unwrap();
         });
 
-        let client = reqwest::Client::new();
+        let client = test_client::TestClient::new();
 
         // Exhaust the rate limit with a POST.
         let _ = client
-            .post(format!("http://{relay_addr}/v2/ohttp"))
-            .header("Content-Type", "message/ohttp-req")
-            .body(vec![0x01])
-            .send()
-            .await
-            .unwrap();
+            .post(
+                format!("http://{relay_addr}/v2/ohttp"),
+                "message/ohttp-req",
+                vec![0x01],
+            )
+            .await;
 
         // Health should still work (not rate-limited).
         for _ in 0..5 {
-            let resp = client
-                .get(format!("http://{relay_addr}/health"))
-                .send()
-                .await
-                .unwrap();
+            let resp = client.get(format!("http://{relay_addr}/health")).await;
             assert_eq!(
                 resp.status().as_u16(),
                 200,

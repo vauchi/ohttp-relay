@@ -4,20 +4,24 @@
 
 //! Upstream (gateway) HTTP client.
 //!
-//! Wraps reqwest to forward blobs and key requests to the vauchi-relay gateway.
-//! All calls strip identifying headers — only the raw body is forwarded for
-//! OHTTP blobs; key fetches carry no client-derived data at all.
+//! Wraps a blocking `ureq` agent to forward blobs and key requests to the
+//! vauchi-relay gateway. All calls strip identifying headers — only the raw
+//! body is forwarded for OHTTP blobs; key fetches carry no client-derived data
+//! at all.
+//!
+//! `ureq` is intentionally sync; the async router spawns each upstream call
+//! onto tokio's blocking pool so the runtime is never blocked.
 
+use std::io::Read;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use reqwest::Client;
 use tracing::debug;
 
-/// Thin wrapper around a reqwest client bound to a single gateway base URL.
+/// Thin wrapper around a `ureq` agent bound to a single gateway base URL.
 #[derive(Clone)]
 pub struct UpstreamClient {
-    client: Client,
+    agent: ureq::Agent,
     gateway_url: String,
 }
 
@@ -25,20 +29,19 @@ impl UpstreamClient {
     /// Create a new upstream client.
     ///
     /// `gateway_url` must have no trailing slash (validated by `RelayConfig`).
-    /// `default_timeout` is used as the connection timeout for the underlying
-    /// client pool; per-request timeouts are applied at call sites.
+    /// `default_timeout` is used as the global timeout for the underlying
+    /// agent; per-request timeouts are applied at call sites.
     pub fn new(gateway_url: &str, default_timeout: Duration) -> Self {
-        let client = Client::builder()
-            .timeout(default_timeout)
-            // Never follow redirects — the gateway should respond directly.
-            .redirect(reqwest::redirect::Policy::none())
-            // Use rustls (already a dep via reqwest feature flag).
-            .use_rustls_tls()
-            .build()
-            .expect("reqwest client construction should not fail");
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(default_timeout))
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .build();
+
+        let agent = config.new_agent();
 
         UpstreamClient {
-            client,
+            agent,
             gateway_url: gateway_url.to_owned(),
         }
     }
@@ -53,27 +56,28 @@ impl UpstreamClient {
     pub async fn post_ohttp(
         &self,
         body: Bytes,
-        timeout: Duration,
         max_response_bytes: usize,
     ) -> Result<Bytes, UpstreamError> {
         let url = format!("{}/v2/ohttp", self.gateway_url);
         debug!(url, body_len = body.len(), "POST upstream /v2/ohttp");
 
-        let resp = self
-            .client
-            .post(&url)
-            .timeout(timeout)
-            .header(reqwest::header::CONTENT_TYPE, "message/ohttp-req")
-            .body(body)
-            .send()
-            .await
-            .map_err(UpstreamError::Request)?;
+        let agent = self.agent.clone();
+        tokio::task::spawn_blocking(move || {
+            let response = agent
+                .post(&url)
+                .header("Content-Type", "message/ohttp-req")
+                .send(&*body)
+                .map_err(|e| UpstreamError::Request(e.to_string()))?;
 
-        if !resp.status().is_success() {
-            return Err(UpstreamError::Status(resp.status().as_u16()));
-        }
+            let status = response.status().as_u16();
+            if !(200..300).contains(&status) {
+                return Err(UpstreamError::Status(status));
+            }
 
-        read_bounded_response(resp, max_response_bytes).await
+            read_bounded_response(response, max_response_bytes)
+        })
+        .await
+        .map_err(|e| UpstreamError::Request(e.to_string()))?
     }
 
     /// Fetch the OHTTP key from the gateway's `GET /v2/ohttp-key`.
@@ -85,36 +89,38 @@ impl UpstreamClient {
     /// default limit 4 KiB).
     pub async fn get_ohttp_key(
         &self,
-        timeout: Duration,
         max_key_response_bytes: usize,
     ) -> Result<OhttpKeyResponse, UpstreamError> {
         let url = format!("{}/v2/ohttp-key", self.gateway_url);
         debug!(url, "GET upstream /v2/ohttp-key");
 
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(UpstreamError::Request)?;
+        let agent = self.agent.clone();
+        tokio::task::spawn_blocking(move || {
+            let response = agent
+                .get(&url)
+                .call()
+                .map_err(|e| UpstreamError::Request(e.to_string()))?;
 
-        if !resp.status().is_success() {
-            return Err(UpstreamError::Status(resp.status().as_u16()));
-        }
+            let status = response.status().as_u16();
+            if !(200..300).contains(&status) {
+                return Err(UpstreamError::Status(status));
+            }
 
-        let key_fingerprint = resp
-            .headers()
-            .get("Key-Fingerprint")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_owned());
+            let key_fingerprint = response
+                .headers()
+                .get("Key-Fingerprint")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned());
 
-        let body = read_bounded_response(resp, max_key_response_bytes).await?;
+            let body = read_bounded_response(response, max_key_response_bytes)?;
 
-        Ok(OhttpKeyResponse {
-            body,
-            key_fingerprint,
+            Ok(OhttpKeyResponse {
+                body,
+                key_fingerprint,
+            })
         })
+        .await
+        .map_err(|e| UpstreamError::Request(e.to_string()))?
     }
 }
 
@@ -122,11 +128,15 @@ impl UpstreamClient {
 ///
 /// Checks `Content-Length` first for a fast reject, then reads chunks
 /// incrementally to detect oversized bodies without unbounded allocation.
-async fn read_bounded_response(
-    mut resp: reqwest::Response,
+fn read_bounded_response(
+    response: ureq::http::Response<ureq::Body>,
     max_bytes: usize,
 ) -> Result<Bytes, UpstreamError> {
-    if let Some(content_length) = resp.content_length()
+    if let Some(content_length) = response
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
         && content_length > max_bytes as u64
     {
         return Err(UpstreamError::ResponseTooLarge {
@@ -135,9 +145,17 @@ async fn read_bounded_response(
         });
     }
 
+    let mut reader = response.into_body().into_reader();
     let mut buf = Vec::with_capacity(max_bytes.min(8192));
-    while let Some(chunk) = resp.chunk().await.map_err(UpstreamError::Request)? {
-        buf.extend_from_slice(&chunk);
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| UpstreamError::Request(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
         if buf.len() > max_bytes {
             return Err(UpstreamError::ResponseTooLarge {
                 limit: max_bytes,
@@ -160,8 +178,8 @@ pub struct OhttpKeyResponse {
 /// Errors from upstream gateway calls.
 #[derive(Debug)]
 pub enum UpstreamError {
-    /// A reqwest-level transport or timeout error.
-    Request(reqwest::Error),
+    /// A ureq-level transport or timeout error.
+    Request(String),
     /// The gateway returned a non-2xx status code.
     Status(u16),
     /// The upstream response body exceeded the configured limit.
