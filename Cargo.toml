@@ -16,15 +16,18 @@ default = []
 flame = ["dep:tracing-flame"]
 
 [dependencies]
-axum = "0.7"
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "tracing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 
 # Sync HTTP client for upstream gateway calls. Wrapped in spawn_blocking so the
 # async runtime is never blocked. Much smaller dependency tree than reqwest.
-ureq = { version = "3", default-features = false, features = ["json", "rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+# Use rustls-no-provider so we can select aws-lc-rs as the crypto provider
+# instead of the default ring backend.
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
 
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 tracing-flame = { version = "0.2", optional = true }
 
 [dev-dependencies]

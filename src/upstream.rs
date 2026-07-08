@@ -32,6 +32,11 @@ impl UpstreamClient {
     /// `default_timeout` is used as the global timeout for the underlying
     /// agent; per-request timeouts are applied at call sites.
     pub fn new(gateway_url: &str, default_timeout: Duration) -> Self {
+        // Install the aws-lc-rs crypto provider for rustls. This is required
+        // because ureq is built with rustls-no-provider; idempotent if already
+        // set (e.g., by the binary's main or by another UpstreamClient).
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(default_timeout))
             .http_status_as_error(false)
