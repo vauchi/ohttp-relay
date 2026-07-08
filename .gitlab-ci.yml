@@ -16,7 +16,7 @@
 # Shared templates
 include:
   - project: 'vauchi/scripts'
-    ref: main
+    ref: ci-templates-v2026.07.2
     file:
       - '/ci-templates/rust-base.yml'
       - '/ci-templates/security.yml'
@@ -46,6 +46,7 @@ stages:
   - trigger
 
 variables:
+  VAUCHI_SCRIPTS_REF: "ci-templates-v2026.07.2"
   CS_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
 
 # ============================================================
@@ -190,6 +191,7 @@ fuzz:nightly:
 # ============================================================
 
 semgrep-sast:
+  allow_failure: false
   tags: [docker]
   needs:
     - job: lint:format
@@ -207,6 +209,7 @@ semgrep-sast:
     - if: $CI_PIPELINE_SOURCE == "schedule"
 
 secret_detection:
+  allow_failure: false
   tags: [docker]
   needs:
     - job: lint:format
@@ -229,8 +232,10 @@ container_scanning:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
     - if: $CI_PIPELINE_SOURCE == "schedule"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CONTAINER_SCANNING_ALLOW_FAILURE == "true"'
       allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      allow_failure: false
 
 security:audit:
   extends: [.rust-runner-readonly, .security-audit-job]
