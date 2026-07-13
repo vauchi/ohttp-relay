@@ -19,10 +19,14 @@
 //! - No headers from client requests are propagated upstream.
 //! - No state is stored between requests.
 
+pub mod clock;
 pub mod config;
 #[cfg(feature = "flame")]
 pub mod flame;
 pub mod key_cache;
 pub mod rate_limit;
+pub mod request;
 pub mod router;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 pub mod upstream;

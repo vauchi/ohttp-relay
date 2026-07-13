@@ -7,61 +7,113 @@
 //! The gateway's key config changes at most once per rotation period (default
 //! 24 hours). Caching prevents a thundering herd on the upstream when many
 //! clients bootstrap simultaneously (app update rollout, relay restart).
+//!
+//! The clock is injectable via the [`Clock`] trait so tests can verify TTL
+//! behavior deterministically without `thread::sleep`.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 
+use crate::clock::{Clock, StdClock};
+
+#[derive(Debug)]
 struct CachedEntry {
     body: Bytes,
     fingerprint: Option<String>,
     fetched_at: Instant,
 }
 
-// TODO(PFC): hidden mutable cache state + non-injectable clock — see 2026-07-06-ohttp-relay-pfc-violations O1
 /// In-memory TTL cache for the upstream OHTTP key config.
+#[derive(Debug)]
 pub struct KeyConfigCache {
     ttl: Duration,
+    clock: Arc<dyn Clock>,
     state: Mutex<Option<CachedEntry>>,
 }
 
 impl KeyConfigCache {
-    /// Create a new cache with the given TTL.
+    /// Create a new cache with the given TTL using the system clock.
     pub fn new(ttl: Duration) -> Self {
+        Self::with_clock(ttl, Arc::new(StdClock))
+    }
+
+    /// Create a new cache with the given TTL and clock.
+    ///
+    /// Useful in tests that need deterministic control over time.
+    pub fn with_clock<C>(ttl: Duration, clock: Arc<C>) -> Self
+    where
+        C: Clock + 'static,
+    {
         Self {
             ttl,
+            clock,
             state: Mutex::new(None),
         }
     }
 
     /// Return the cached key config if it exists and is still fresh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn get(&self) -> Option<(Bytes, Option<String>)> {
-        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner()); // TODO(PFC): silent mutex poisoning recovery — see 2026-07-06-ohttp-relay-pfc-violations O7
-        if let Some(entry) = guard.as_ref()
-            && entry.fetched_at.elapsed() < self.ttl
-        {
-            return Some((entry.body.clone(), entry.fingerprint.clone()));
+        let guard = self.state.lock().expect("key cache mutex poisoned");
+        if let Some(entry) = guard.as_ref() {
+            let age = self.clock.now().duration_since(entry.fetched_at);
+            if age < self.ttl {
+                return Some((entry.body.clone(), entry.fingerprint.clone()));
+            }
         }
         None
     }
 
     /// Store a fresh key config response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn set(&self, body: Bytes, fingerprint: Option<String>) {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner()); // TODO(PFC): silent mutex poisoning recovery — see 2026-07-06-ohttp-relay-pfc-violations O7
+        let mut guard = self.state.lock().expect("key cache mutex poisoned");
         *guard = Some(CachedEntry {
             body,
             fingerprint,
-            fetched_at: Instant::now(),
+            fetched_at: self.clock.now(),
         });
     }
 }
 
-// INLINE_TEST_REQUIRED: cache is a single-module state machine — splitting
-// tests would require re-exporting internal CachedEntry or duplicating setup
+// INLINE_TEST_REQUIRED: Tests access the internal mutex and `CachedEntry` directly;
+// integration tests cannot reach these crate-private internals.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Clock;
+
+    /// Deterministic clock for tests.
+    #[derive(Debug)]
+    struct FakeClock {
+        now: Mutex<Instant>,
+    }
+
+    impl FakeClock {
+        fn new() -> Self {
+            Self {
+                now: Mutex::new(Instant::now()),
+            }
+        }
+
+        fn advance(&self, duration: Duration) {
+            *self.now.lock().unwrap() += duration;
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> Instant {
+            *self.now.lock().unwrap()
+        }
+    }
 
     // @scenario: key_cache :: empty cache returns None
     #[test]
@@ -110,14 +162,15 @@ mod tests {
     // @scenario: key_cache :: entry expires after non-zero TTL elapses
     #[test]
     fn returns_none_after_nonzero_ttl_elapses() {
-        let cache = KeyConfigCache::new(Duration::from_millis(50));
+        let clock = Arc::new(FakeClock::new());
+        let cache = KeyConfigCache::with_clock(Duration::from_millis(50), Arc::clone(&clock));
         cache.set(Bytes::from_static(b"expiring"), Some("fp".to_owned()));
 
         // Fresh — should hit.
         assert!(cache.get().is_some(), "fresh entry should be cached");
 
-        // Wait past TTL.
-        std::thread::sleep(Duration::from_millis(60));
+        // Advance past TTL.
+        clock.advance(Duration::from_millis(60));
 
         assert!(
             cache.get().is_none(),
@@ -133,5 +186,21 @@ mod tests {
 
         let (_, fp) = cache.get().expect("should hit cache");
         assert!(fp.is_none());
+    }
+
+    // @internal
+    #[test]
+    #[should_panic(expected = "key cache mutex poisoned")]
+    fn panics_on_mutex_poisoning() {
+        let cache = KeyConfigCache::new(Duration::from_secs(60));
+
+        // Poison the mutex by panicking while holding the lock.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = cache.state.lock().unwrap();
+            panic!("intentional panic while holding mutex");
+        });
+
+        // The next get must panic instead of silently recovering from poisoning.
+        let _ = cache.get();
     }
 }

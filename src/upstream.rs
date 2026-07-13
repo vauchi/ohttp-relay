@@ -16,7 +16,6 @@ use std::io::Read;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use tracing::debug;
 
 /// Thin wrapper around a `ureq` agent bound to a single gateway base URL.
 #[derive(Clone)]
@@ -56,7 +55,6 @@ impl UpstreamClient {
     /// Only the raw bytes are sent — no headers from the original client
     /// request are forwarded. The response body is returned verbatim.
     ///
-    // TODO(PFC): upstream call logs internally — see 2026-07-06-ohttp-relay-pfc-violations O6
     /// `max_response_bytes` limits how much data we read from the upstream
     /// response, protecting against a compromised upstream returning gigabytes.
     pub async fn post_ohttp(
@@ -65,7 +63,6 @@ impl UpstreamClient {
         max_response_bytes: usize,
     ) -> Result<Bytes, UpstreamError> {
         let url = format!("{}/v2/ohttp", self.gateway_url);
-        debug!(url, body_len = body.len(), "POST upstream /v2/ohttp");
 
         let agent = self.agent.clone();
         tokio::task::spawn_blocking(move || {
@@ -91,7 +88,6 @@ impl UpstreamClient {
     /// No client-derived data is included in this request.
     /// Returns the key body and, if present, the `Key-Fingerprint` header value.
     ///
-    // TODO(PFC): upstream call logs internally — see 2026-07-06-ohttp-relay-pfc-violations O6
     /// `max_key_response_bytes` limits key config reads (typically ~100 bytes,
     /// default limit 4 KiB).
     pub async fn get_ohttp_key(
@@ -99,7 +95,6 @@ impl UpstreamClient {
         max_key_response_bytes: usize,
     ) -> Result<OhttpKeyResponse, UpstreamError> {
         let url = format!("{}/v2/ohttp-key", self.gateway_url);
-        debug!(url, "GET upstream /v2/ohttp-key");
 
         let agent = self.agent.clone();
         tokio::task::spawn_blocking(move || {

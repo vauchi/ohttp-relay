@@ -12,14 +12,16 @@ ARG HUB=docker.io/library
 
 # Planner stage: generate recipe.json for dependency caching
 FROM ${HUB}/rust:1.93-bookworm AS planner
-RUN cargo install cargo-chef
+# Pin cargo-chef so the planner binary is reproducible and not affected by a
+# compromised future release.
+RUN cargo install cargo-chef --version 0.1.77
 WORKDIR /app
 COPY . ./ohttp-relay
 RUN cd ohttp-relay && cargo chef prepare --recipe-path /app/recipe.json
 
 # Cook stage: build dependencies only (cached layer)
 FROM ${HUB}/rust:1.93-bookworm AS cook
-RUN cargo install cargo-chef
+RUN cargo install cargo-chef --version 0.1.77
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
@@ -35,8 +37,9 @@ RUN cd ohttp-relay && cargo build --release
 ARG BUILD_INFO='{"sha":"development","ref":"local","built":"unknown"}'
 RUN echo "${BUILD_INFO}" > /tmp/build-info.json
 
-# Runtime stage — distroless for minimal attack surface
-FROM gcr.io/distroless/cc-debian12:latest
+# Runtime stage — distroless for minimal attack surface.
+# Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
+FROM gcr.io/distroless/cc-debian12@sha256:b7550f0b15838de14c564337eef2b804ba593ae55d81ca855421bd52f19bb480
 
 COPY --from=builder /app/ohttp-relay/target/release/vauchi-ohttp-relay /usr/local/bin/
 COPY --from=builder /tmp/build-info.json /usr/share/build-info.json

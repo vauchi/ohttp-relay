@@ -14,6 +14,10 @@ default = []
 # Profiling: install a tracing-flame layer at startup. Writes a `.folded`
 # trace to `$VAUCHI_FLAME_OUT` (default: `ohttp-relay/artifacts/flame/`).
 flame = ["dep:tracing-flame"]
+# Test-support helpers exposed for integration tests and downstream callers.
+# Tests that need shared state constructors must enable this feature, e.g.:
+#   cargo test --features test-utils
+test-utils = []
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "tracing"] }
@@ -25,17 +29,24 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 # instead of the default ring backend.
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
+url = "2"
+async-trait = "0.1"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 tracing-flame = { version = "0.2", optional = true }
 
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-
-# Test-only HTTP client for hitting the real TCP listener in router tests.
-# These crates are already pulled in transitively by axum; listing them here
-# makes the test helper's imports explicit without adding new dependency weight.
+# HTTP client used by the `test_utils::test_client` helper. These crates are
+# already pulled in transitively by axum; listing them explicitly avoids relying
+# on axum's re-exports for test-support code.
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 http-body-util = "0.1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "router_integration"
+path = "tests/router_integration.rs"
+required-features = ["test-utils"]

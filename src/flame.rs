@@ -22,7 +22,7 @@ const DEFAULT_FILTER: &str = "info,vauchi_ohttp_relay=trace";
 ///
 /// Writes are unbuffered so traces flush on signal-kill.
 pub fn init() {
-    let path = output_path();
+    let path = flame_output_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .unwrap_or_else(|e| panic!("flame: create {} failed: {e}", parent.display()));
@@ -48,11 +48,16 @@ pub fn init() {
     eprintln!("[flame] writing folded trace -> {}", path.display());
 }
 
-// TODO(PFC): output_path() reads env and SystemTime::now() — see 2026-07-06-ohttp-relay-pfc-violations O10
-fn output_path() -> PathBuf {
+/// Resolve the flame-trace output path from environment, falling back to a
+/// timestamped file under the crate directory.
+///
+/// This function deliberately performs I/O (env + clock) so that
+/// [`output_path`] remains a pure function of its inputs.
+fn flame_output_path() -> PathBuf {
     if let Ok(p) = std::env::var("VAUCHI_FLAME_OUT") {
         return PathBuf::from(p);
     }
+
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -60,6 +65,14 @@ fn output_path() -> PathBuf {
     let base = std::env::var("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
-    base.join("artifacts/flame")
-        .join(format!("ohttp-relay-{ts}.folded"))
+
+    output_path(base, ts)
+}
+
+/// Pure function: build a flame output path from a base directory and timestamp.
+fn output_path(base_dir: impl AsRef<std::path::Path>, timestamp: u64) -> PathBuf {
+    base_dir
+        .as_ref()
+        .join("artifacts/flame")
+        .join(format!("ohttp-relay-{timestamp}.folded"))
 }

@@ -18,9 +18,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use vauchi_ohttp_relay::config::RelayConfig;
 use vauchi_ohttp_relay::key_cache::KeyConfigCache;
@@ -28,7 +29,6 @@ use vauchi_ohttp_relay::rate_limit::RateLimiter;
 use vauchi_ohttp_relay::router::{AppState, build_router};
 use vauchi_ohttp_relay::upstream::UpstreamClient;
 
-// TODO(PFC): main() is a long orchestrator — see 2026-07-06-ohttp-relay-pfc-violations O8
 #[tokio::main]
 async fn main() {
     // With the `flame` feature, the flame init replaces `init_tracing()`.
@@ -45,6 +45,27 @@ async fn main() {
         }
     };
 
+    log_startup(&config);
+
+    let rate_limiter = build_rate_limiter(config.rate_limit_per_sec, config.rate_limit_max_buckets);
+    let key_cache = build_key_cache(config.key_cache_ttl);
+    let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
+
+    let state = AppState {
+        config: config.clone(),
+        upstream,
+        rate_limiter,
+        key_cache,
+    };
+    let app = build_router(state);
+
+    serve(config.listen_addr, app).await;
+
+    info!("vauchi-ohttp-relay stopped");
+}
+
+/// Log configuration at startup.
+fn log_startup(config: &RelayConfig) {
     info!(
         listen_addr = %config.listen_addr,
         gateway_url = %config.gateway_url,
@@ -57,68 +78,90 @@ async fn main() {
         key_cache_ttl_secs = config.key_cache_ttl.as_secs(),
         "vauchi-ohttp-relay starting"
     );
+}
 
-    let rate_limiter = if config.rate_limit_per_sec > 0 {
-        let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_sec));
-
-        // Periodically evict stale rate-limit entries to prevent unbounded
-        // memory growth from diverse source IPs.
-        let limiter_cleanup = Arc::clone(&limiter);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(600));
-            interval.tick().await; // skip initial immediate tick
-            loop {
-                interval.tick().await;
-                limiter_cleanup.evict_stale(Duration::from_secs(1800));
-            }
-        });
-
-        Some(limiter)
-    } else {
+/// Build the rate limiter and, if enabled, spawn a background task to evict
+/// stale entries so memory does not grow unbounded under diverse source IPs.
+fn build_rate_limiter(
+    rate_limit_per_sec: u32,
+    rate_limit_max_buckets: usize,
+) -> Option<Arc<RateLimiter>> {
+    if rate_limit_per_sec == 0 {
         info!("rate limiting disabled (OHTTP_RELAY_RATE_LIMIT_PER_SEC=0)");
-        None
-    };
+        return None;
+    }
 
-    let key_cache = if !config.key_cache_ttl.is_zero() {
-        Some(Arc::new(KeyConfigCache::new(config.key_cache_ttl)))
-    } else {
+    let limiter = Arc::new(RateLimiter::new(rate_limit_per_sec, rate_limit_max_buckets));
+    let limiter_cleanup = Arc::clone(&limiter);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(600));
+        interval.tick().await; // skip initial immediate tick
+        loop {
+            interval.tick().await;
+            limiter_cleanup.evict_stale(Duration::from_secs(1800));
+        }
+    });
+
+    Some(limiter)
+}
+
+/// Build the key config cache if a non-zero TTL is configured.
+fn build_key_cache(key_cache_ttl: Duration) -> Option<Arc<KeyConfigCache>> {
+    if key_cache_ttl.is_zero() {
         info!("key config caching disabled (OHTTP_RELAY_KEY_CACHE_TTL_SECS=0)");
-        None
-    };
+        return None;
+    }
 
-    let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
-    let state = AppState {
-        config: config.clone(),
-        upstream,
-        rate_limiter,
-        key_cache,
-    };
+    Some(Arc::new(KeyConfigCache::new(key_cache_ttl)))
+}
 
-    let app = build_router(state);
+/// Maximum time to wait for active connections to drain after a shutdown signal.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-    let listener = match TcpListener::bind(config.listen_addr).await {
+/// Bind to the listen address and run the server with graceful shutdown.
+///
+/// If active connections do not drain within [`SHUTDOWN_TIMEOUT`], the server
+/// is forced stopped so a stuck upstream call cannot delay shutdown
+/// indefinitely.
+async fn serve(listen_addr: SocketAddr, app: Router) {
+    let listener = match TcpListener::bind(listen_addr).await {
         Ok(l) => l,
         Err(e) => {
-            error!(addr = %config.listen_addr, error = %e, "failed to bind listener");
+            error!(addr = %listen_addr, error = %e, "failed to bind listener");
             std::process::exit(1);
         }
     };
 
-    info!(addr = %config.listen_addr, "listening");
+    info!(addr = %listen_addr, "listening");
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+    let shutdown = async {
+        shutdown_signal().await;
+        info!("shutdown signal received");
+    };
+
+    match tokio::time::timeout(
+        SHUTDOWN_TIMEOUT,
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown),
     )
-    .with_graceful_shutdown(shutdown_signal())
     .await
-    .unwrap_or_else(|e| error!(error = %e, "server error"));
-
-    info!("vauchi-ohttp-relay stopped");
+    {
+        Ok(Ok(())) => info!("server stopped gracefully"),
+        Ok(Err(e)) => error!(error = %e, "server error"),
+        Err(_) => warn!(
+            timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
+            "graceful shutdown timed out; forcing stop"
+        ),
+    }
 }
 
-// TODO(PFC): shutdown handler logs internally — see 2026-07-06-ohttp-relay-pfc-violations O9
 /// Wait for SIGTERM or SIGINT and return.
+///
+/// This function is intentionally pure: it does not log. The caller decides
+/// what to log when the signal arrives.
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
@@ -141,8 +184,6 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-
-    info!("shutdown signal received");
 }
 
 #[cfg(not(feature = "flame"))]
