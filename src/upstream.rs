@@ -152,7 +152,16 @@ fn read_bounded_response(
         });
     }
 
-    let mut reader = response.into_body().into_reader();
+    read_bounded_body(response.into_body().into_reader(), max_bytes)
+}
+
+/// Read `reader` fully into memory, erroring if it exceeds `max_bytes`.
+///
+/// Split out from `read_bounded_response` so the streaming size-guard is
+/// unit-testable with an arbitrary `Read`: the ureq response body cannot be
+/// constructed in a test, and the loop must keep reading until EOF (`n == 0`)
+/// rather than stopping on the first non-empty read.
+fn read_bounded_body<R: Read>(mut reader: R, max_bytes: usize) -> Result<Bytes, UpstreamError> {
     let mut buf = Vec::with_capacity(max_bytes.min(8192));
     let mut chunk = [0u8; 8192];
     loop {
@@ -244,5 +253,32 @@ mod tests {
             err.to_string(),
             "upstream response exceeds 1024 byte limit (Content-Length: 9999)"
         );
+    }
+
+    // @scenario: upstream :: body larger than the read buffer is fully read
+    #[test]
+    fn reads_full_body_across_multiple_reads() {
+        // 20_000 > the 8192 read buffer, so the loop makes several read()
+        // calls and must continue until EOF, not stop after the first chunk.
+        let data = vec![b'x'; 20_000];
+        let out = read_bounded_body(std::io::Cursor::new(data.clone()), 32_768)
+            .expect("body within limit");
+        assert_eq!(out.len(), 20_000);
+        assert_eq!(out.as_ref(), data.as_slice());
+    }
+
+    // @scenario: upstream :: streamed body exceeding the limit is rejected
+    #[test]
+    fn rejects_body_exceeding_limit_while_streaming() {
+        let data = vec![b'x'; 10_000];
+        let err = read_bounded_body(std::io::Cursor::new(data), 1_024)
+            .expect_err("oversized body must error");
+        assert!(matches!(
+            err,
+            UpstreamError::ResponseTooLarge {
+                limit: 1_024,
+                actual: None
+            }
+        ));
     }
 }

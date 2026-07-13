@@ -14,4 +14,16 @@ exclude_re = [
     "src/main\\.rs:.* main with \\(\\)",
     "src/main\\.rs:.* shutdown_signal",
     "src/main\\.rs:.* init_tracing",
+
+    # Observability-only: the flamegraph profiler has no behavioral contract
+    # to assert (like init_tracing) — mutating its setup is untestable.
+    "src/flame\\.rs:",
+
+    # Time-boundary equivalents: `< ttl` vs `<= ttl` (and `< max_age` vs `<=`)
+    # differ only when the elapsed duration EXACTLY equals the bound, which a
+    # live monotonic clock never yields. A real boundary test needs an
+    # injectable clock — tracked as PFC O1
+    # (2026-07-06-ohttp-relay-pfc-violations). Re-enable once injected.
+    "replace < with <= in KeyConfigCache::get",
+    "replace < with <= in RateLimiter::evict_stale",
 ]
