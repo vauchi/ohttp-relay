@@ -41,6 +41,10 @@ RUN echo "${BUILD_INFO}" > /tmp/build-info.json
 # Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
 FROM gcr.io/distroless/base-nossl-debian12@sha256:36e60081779eefd6a7dc9796e6aafaecd632bc282a8ba76fdb7c8f89a75ea6c7
 
+# Rust binaries (and the C code in aws-lc-rs) still need libgcc_s for panic
+# unwinding. base-nossl omits it, so copy the one from the builder stage.
+COPY --from=builder /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1
+
 COPY --from=builder /app/ohttp-relay/target/release/vauchi-ohttp-relay /usr/local/bin/
 COPY --from=builder /tmp/build-info.json /usr/share/build-info.json
 
