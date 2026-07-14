@@ -14,20 +14,18 @@
 //!
 //! All configuration is via environment variables. See `config::RelayConfig`.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
-use tokio::net::TcpListener;
-use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use vauchi_ohttp_relay::config::RelayConfig;
 use vauchi_ohttp_relay::key_cache::KeyConfigCache;
 use vauchi_ohttp_relay::rate_limit::RateLimiter;
 use vauchi_ohttp_relay::router::{AppState, build_router};
 use vauchi_ohttp_relay::upstream::UpstreamClient;
+
+mod server;
 
 #[tokio::main]
 async fn main() {
@@ -59,7 +57,7 @@ async fn main() {
     };
     let app = build_router(state);
 
-    serve(config.listen_addr, app).await;
+    server::serve(config.listen_addr, app).await;
 
     info!("vauchi-ohttp-relay stopped");
 }
@@ -113,77 +111,6 @@ fn build_key_cache(key_cache_ttl: Duration) -> Option<Arc<KeyConfigCache>> {
     }
 
     Some(Arc::new(KeyConfigCache::new(key_cache_ttl)))
-}
-
-/// Maximum time to wait for active connections to drain after a shutdown signal.
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Bind to the listen address and run the server with graceful shutdown.
-///
-/// If active connections do not drain within [`SHUTDOWN_TIMEOUT`], the server
-/// is forced stopped so a stuck upstream call cannot delay shutdown
-/// indefinitely.
-async fn serve(listen_addr: SocketAddr, app: Router) {
-    let listener = match TcpListener::bind(listen_addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!(addr = %listen_addr, error = %e, "failed to bind listener");
-            std::process::exit(1);
-        }
-    };
-
-    info!(addr = %listen_addr, "listening");
-
-    let shutdown = async {
-        shutdown_signal().await;
-        info!("shutdown signal received");
-    };
-
-    match tokio::time::timeout(
-        SHUTDOWN_TIMEOUT,
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown),
-    )
-    .await
-    {
-        Ok(Ok(())) => info!("server stopped gracefully"),
-        Ok(Err(e)) => error!(error = %e, "server error"),
-        Err(_) => warn!(
-            timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
-            "graceful shutdown timed out; forcing stop"
-        ),
-    }
-}
-
-/// Wait for SIGTERM or SIGINT and return.
-///
-/// This function is intentionally pure: it does not log. The caller decides
-/// what to log when the signal arrives.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
 }
 
 #[cfg(not(feature = "flame"))]
