@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -23,13 +24,26 @@ pub(crate) async fn serve(listen_addr: SocketAddr, app: Router) {
 
     info!(addr = %listen_addr, "listening");
 
-    let shutdown = async {
-        shutdown_signal().await;
-        info!("shutdown signal received");
-    };
-
-    match tokio::time::timeout(
+    serve_until_shutdown(
+        listener,
+        app,
+        async {
+            shutdown_signal().await;
+            info!("shutdown signal received");
+        },
         SHUTDOWN_TIMEOUT,
+    )
+    .await;
+}
+
+pub(crate) async fn serve_until_shutdown(
+    listener: TcpListener,
+    app: Router,
+    shutdown: impl Future<Output = ()>,
+    shutdown_timeout: Duration,
+) {
+    match tokio::time::timeout(
+        shutdown_timeout,
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -41,7 +55,7 @@ pub(crate) async fn serve(listen_addr: SocketAddr, app: Router) {
         Ok(Ok(())) => info!("server stopped gracefully"),
         Ok(Err(error)) => error!(error = %error, "server error"),
         Err(_) => warn!(
-            timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
+            timeout_secs = shutdown_timeout.as_secs(),
             "graceful shutdown timed out; forcing stop"
         ),
     }
