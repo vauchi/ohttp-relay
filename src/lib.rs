@@ -27,6 +27,7 @@ pub mod key_cache;
 pub mod rate_limit;
 pub mod request;
 pub mod router;
+pub mod server;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 pub mod upstream;

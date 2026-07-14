@@ -23,9 +23,8 @@ use vauchi_ohttp_relay::config::RelayConfig;
 use vauchi_ohttp_relay::key_cache::KeyConfigCache;
 use vauchi_ohttp_relay::rate_limit::RateLimiter;
 use vauchi_ohttp_relay::router::{AppState, build_router};
+use vauchi_ohttp_relay::server;
 use vauchi_ohttp_relay::upstream::UpstreamClient;
-
-mod server;
 
 #[tokio::main]
 async fn main() {
