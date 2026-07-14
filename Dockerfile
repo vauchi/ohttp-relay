@@ -37,9 +37,9 @@ RUN cd ohttp-relay && cargo build --release
 ARG BUILD_INFO='{"sha":"development","ref":"local","built":"unknown"}'
 RUN echo "${BUILD_INFO}" > /tmp/build-info.json
 
-# Runtime stage — distroless for minimal attack surface.
+# Runtime stage — distroless glibc without unused OpenSSL libraries.
 # Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
-FROM gcr.io/distroless/cc-debian12@sha256:7ee09f36862efbdbf70422db263e411c2618409ca46faa555bd5b636155307df
+FROM gcr.io/distroless/base-nossl-debian12@sha256:36e60081779eefd6a7dc9796e6aafaecd632bc282a8ba76fdb7c8f89a75ea6c7
 
 COPY --from=builder /app/ohttp-relay/target/release/vauchi-ohttp-relay /usr/local/bin/
 COPY --from=builder /tmp/build-info.json /usr/share/build-info.json
