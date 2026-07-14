@@ -39,7 +39,7 @@ RUN echo "${BUILD_INFO}" > /tmp/build-info.json
 
 # Runtime stage — distroless for minimal attack surface.
 # Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
-FROM gcr.io/distroless/cc-debian12@sha256:b7550f0b15838de14c564337eef2b804ba593ae55d81ca855421bd52f19bb480
+FROM gcr.io/distroless/cc-debian12@sha256:7ee09f36862efbdbf70422db263e411c2618409ca46faa555bd5b636155307df
 
 COPY --from=builder /app/ohttp-relay/target/release/vauchi-ohttp-relay /usr/local/bin/
 COPY --from=builder /tmp/build-info.json /usr/share/build-info.json
