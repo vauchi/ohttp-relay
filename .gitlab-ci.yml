@@ -79,6 +79,19 @@ lint:machete:
 lint:images:
   extends: [.image-lint]
 
+check:release-safety:
+  stage: lint
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.11-slim
+  tags: [docker]
+  needs: []
+  allow_failure: false
+  script:
+    - python3 tests/ci_release_safety.py
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
 # ============================================================
 # Test Stage (change-based, gated by lint)
 # ============================================================
@@ -311,9 +324,8 @@ publish:package:ohttp-relay:
   stage: deploy
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/alpine:3.21
   tags: [docker]
-  needs:
-    - job: build:release
-      artifacts: true
+  dependencies:
+    - build:release
   variables:
     PACKAGE_NAME: "vauchi-ohttp-relay"
     BINARY_NAME: "vauchi-ohttp-relay-linux-amd64"
@@ -343,9 +355,9 @@ publish:package:ohttp-relay:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
 
-# Promote the SHA-tagged image to :latest only after container scanning
-# has finished. On tags and schedules container_scanning blocks on
-# findings; on main it is advisory (see container_scanning comment).
+# Promote the SHA-tagged image to :latest only from main and only after
+# container scanning. Tag pipelines keep their immutable SHA image; excluding
+# them prevents an older tag pipeline from rolling :latest backward.
 promote:latest:
   stage: deploy
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27
@@ -365,7 +377,6 @@ promote:latest:
       echo "✅ Promoted $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA to :latest"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
 
 # ============================================================
 # Load Stage (nightly, k6 HTTP load test)
