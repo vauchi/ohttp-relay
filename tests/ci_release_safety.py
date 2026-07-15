@@ -36,6 +36,7 @@ class ReleaseSafetyContractTests(unittest.TestCase):
 
         self.assertIn("  stage: deploy", publish)
         self.assertNotRegex(publish, r"(?m)^  needs:")
+        self.assertIn("  dependencies:\n    - build:release", publish)
         self.assertLess(stages.index("security"), stages.index("deploy"))
         self.assertLess(stages.index("scan"), stages.index("deploy"))
 
@@ -61,6 +62,7 @@ class ReleaseSafetyContractTests(unittest.TestCase):
         self.assertIn("python3 tests/ci_release_safety.py", contract)
         self.assertIn('$CI_PIPELINE_SOURCE == "merge_request_event"', contract)
         self.assertIn("$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH", contract)
+        self.assertIn("$CI_COMMIT_TAG =~ /^v", contract)
 
 
 if __name__ == "__main__":
