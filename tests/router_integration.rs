@@ -178,6 +178,21 @@ async fn e2e_control_route_reorders_two_concurrent_opaque_forwards() {
     let first = tokio::spawn(app.clone().oneshot(first_request));
     tokio::task::yield_now().await;
 
+    let status_request = Request::builder()
+        .method(http::Method::GET)
+        .uri("/__e2e/reorder-status")
+        .body(Body::empty())
+        .unwrap();
+    let status_response = app.clone().oneshot(status_request).await.unwrap();
+    assert_eq!(status_response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(status_response.into_body(), 16)
+            .await
+            .unwrap()
+            .as_ref(),
+        b"pending"
+    );
+
     let second_request = Request::builder()
         .method(http::Method::POST)
         .uri("/v2/ohttp")
@@ -215,12 +230,13 @@ async fn e2e_control_route_reorders_two_concurrent_opaque_forwards() {
 async fn production_router_omits_e2e_fault_control_route() {
     let state = build_test_state(65_536, "http://127.0.0.1:19999");
     let app = build_router(state);
-    for path in [
-        "/__e2e/duplicate-next-forward",
-        "/__e2e/reorder-next-forward",
+    for (method, path) in [
+        (http::Method::POST, "/__e2e/duplicate-next-forward"),
+        (http::Method::POST, "/__e2e/reorder-next-forward"),
+        (http::Method::GET, "/__e2e/reorder-status"),
     ] {
         let request = Request::builder()
-            .method(http::Method::POST)
+            .method(method)
             .uri(path)
             .body(Body::empty())
             .unwrap();

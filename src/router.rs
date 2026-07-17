@@ -18,7 +18,7 @@ use std::sync::Arc;
 #[cfg(feature = "e2e-faults")]
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use axum::{
@@ -62,10 +62,12 @@ pub struct E2eFaultController {
     duplicate_next_forward: AtomicBool,
     reorder_next_forward: AtomicBool,
     pending_reorder: Mutex<Option<PendingReorder>>,
+    next_reorder_id: AtomicU64,
 }
 
 #[cfg(feature = "e2e-faults")]
 struct PendingReorder {
+    id: u64,
     body: Bytes,
     response: oneshot::Sender<Response>,
 }
@@ -77,6 +79,7 @@ impl E2eFaultController {
             duplicate_next_forward: AtomicBool::new(false),
             reorder_next_forward: AtomicBool::new(false),
             pending_reorder: Mutex::new(None),
+            next_reorder_id: AtomicU64::new(0),
         }
     }
 }
@@ -125,6 +128,8 @@ pub fn build_router(state: AppState) -> Router {
         "/__e2e/reorder-next-forward",
         post(handle_e2e_reorder_next_forward),
     );
+    #[cfg(feature = "e2e-faults")]
+    let router = router.route("/__e2e/reorder-status", get(handle_e2e_reorder_status));
     router.with_state(state)
 }
 
@@ -159,24 +164,30 @@ async fn handle_ohttp_forward(State(state): State<AppState>, context: RequestCon
             .reorder_next_forward
             .swap(false, Ordering::SeqCst)
         {
+            let id = controller.next_reorder_id.fetch_add(1, Ordering::SeqCst);
             let (response, receiver) = oneshot::channel();
             let queued = {
                 let mut pending = controller.pending_reorder.lock().unwrap();
                 if pending.is_some() {
                     false
                 } else {
-                    *pending = Some(PendingReorder { body, response });
+                    *pending = Some(PendingReorder { id, body, response });
                     true
                 }
             };
             if !queued {
                 return StatusCode::CONFLICT.into_response();
             }
-            return timeout(Duration::from_secs(5), receiver)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_else(|| StatusCode::GATEWAY_TIMEOUT.into_response());
+            return match timeout(Duration::from_secs(15), receiver).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(_)) | Err(_) => {
+                    let mut pending = controller.pending_reorder.lock().unwrap();
+                    if pending.as_ref().is_some_and(|pending| pending.id == id) {
+                        pending.take();
+                    }
+                    StatusCode::GATEWAY_TIMEOUT.into_response()
+                }
+            };
         }
 
         let pending_reorder = controller.pending_reorder.lock().unwrap().take();
@@ -245,6 +256,19 @@ async fn handle_e2e_reorder_next_forward(State(state): State<AppState>) -> Statu
         .reorder_next_forward
         .store(true, Ordering::SeqCst);
     StatusCode::NO_CONTENT
+}
+
+#[cfg(feature = "e2e-faults")]
+async fn handle_e2e_reorder_status(State(state): State<AppState>) -> (StatusCode, &'static str) {
+    let Some(controller) = state.e2e_fault_controller else {
+        return (StatusCode::NOT_FOUND, "not found");
+    };
+    let status = if controller.pending_reorder.lock().unwrap().is_some() {
+        "pending"
+    } else {
+        "idle"
+    };
+    (StatusCode::OK, status)
 }
 
 /// `GET /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway.
