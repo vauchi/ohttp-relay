@@ -15,8 +15,6 @@
 //! All configuration is via environment variables. See `config::RelayConfig`.
 
 use std::sync::Arc;
-#[cfg(feature = "e2e-faults")]
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tracing::{error, info};
@@ -24,6 +22,8 @@ use tracing::{error, info};
 use vauchi_ohttp_relay::config::RelayConfig;
 use vauchi_ohttp_relay::key_cache::KeyConfigCache;
 use vauchi_ohttp_relay::rate_limit::RateLimiter;
+#[cfg(feature = "e2e-faults")]
+use vauchi_ohttp_relay::router::E2eFaultController;
 use vauchi_ohttp_relay::router::{AppState, build_router};
 use vauchi_ohttp_relay::server;
 use vauchi_ohttp_relay::upstream::UpstreamClient;
@@ -56,7 +56,7 @@ async fn main() {
         rate_limiter,
         key_cache,
         #[cfg(feature = "e2e-faults")]
-        e2e_fault_controller: Some(Arc::new(AtomicBool::new(false))),
+        e2e_fault_controller: Some(Arc::new(E2eFaultController::new())),
     };
     let app = build_router(state);
 

@@ -16,7 +16,10 @@
 
 use std::sync::Arc;
 #[cfg(feature = "e2e-faults")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use axum::{
     Router,
@@ -27,6 +30,12 @@ use axum::{
     routing::{get, post},
 };
 use tracing::{debug, warn};
+
+#[cfg(feature = "e2e-faults")]
+use tokio::{
+    sync::oneshot,
+    time::{Duration, timeout},
+};
 
 use crate::config::RelayConfig;
 use crate::key_cache::KeyConfigCache;
@@ -45,14 +54,45 @@ pub struct AppState {
     pub key_cache: Option<Arc<KeyConfigCache>>,
     /// E2E-only one-shot opaque-forward controller. Absent from production builds.
     #[cfg(feature = "e2e-faults")]
-    pub e2e_fault_controller: Option<Arc<AtomicBool>>,
+    pub e2e_fault_controller: Option<Arc<E2eFaultController>>,
+}
+
+#[cfg(feature = "e2e-faults")]
+pub struct E2eFaultController {
+    duplicate_next_forward: AtomicBool,
+    reorder_next_forward: AtomicBool,
+    pending_reorder: Mutex<Option<PendingReorder>>,
+}
+
+#[cfg(feature = "e2e-faults")]
+struct PendingReorder {
+    body: Bytes,
+    response: oneshot::Sender<Response>,
+}
+
+#[cfg(feature = "e2e-faults")]
+impl E2eFaultController {
+    pub fn new() -> Self {
+        Self {
+            duplicate_next_forward: AtomicBool::new(false),
+            reorder_next_forward: AtomicBool::new(false),
+            pending_reorder: Mutex::new(None),
+        }
+    }
+}
+
+#[cfg(feature = "e2e-faults")]
+impl Default for E2eFaultController {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(feature = "e2e-faults")]
 impl AppState {
     /// Enable the E2E-only opaque-forward fault controller without arming it.
     pub fn with_e2e_fault_controller(mut self) -> Self {
-        self.e2e_fault_controller = Some(Arc::new(AtomicBool::new(false)));
+        self.e2e_fault_controller = Some(Arc::new(E2eFaultController::new()));
         self
     }
 
@@ -63,6 +103,7 @@ impl AppState {
             .e2e_fault_controller
             .as_ref()
             .expect("E2E fault controller is initialized")
+            .duplicate_next_forward
             .store(true, Ordering::SeqCst);
         state
     }
@@ -78,6 +119,11 @@ pub fn build_router(state: AppState) -> Router {
     let router = router.route(
         "/__e2e/duplicate-next-forward",
         post(handle_e2e_duplicate_next_forward),
+    );
+    #[cfg(feature = "e2e-faults")]
+    let router = router.route(
+        "/__e2e/reorder-next-forward",
+        post(handle_e2e_reorder_next_forward),
     );
     router.with_state(state)
 }
@@ -108,26 +154,64 @@ async fn handle_ohttp_forward(State(state): State<AppState>, context: RequestCon
     );
 
     #[cfg(feature = "e2e-faults")]
-    let duplicate_body = state
-        .e2e_fault_controller
-        .as_ref()
-        .filter(|remaining| remaining.swap(false, Ordering::SeqCst))
-        .map(|_| body.clone());
+    if let Some(controller) = state.e2e_fault_controller.as_ref() {
+        if controller
+            .reorder_next_forward
+            .swap(false, Ordering::SeqCst)
+        {
+            let (response, receiver) = oneshot::channel();
+            let queued = {
+                let mut pending = controller.pending_reorder.lock().unwrap();
+                if pending.is_some() {
+                    false
+                } else {
+                    *pending = Some(PendingReorder { body, response });
+                    true
+                }
+            };
+            if !queued {
+                return StatusCode::CONFLICT.into_response();
+            }
+            return timeout(Duration::from_secs(5), receiver)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_else(|| StatusCode::GATEWAY_TIMEOUT.into_response());
+        }
 
-    let first_response = state
-        .upstream
-        .post_ohttp(body, state.config.max_response_bytes)
-        .await;
+        let pending_reorder = controller.pending_reorder.lock().unwrap().take();
+        if let Some(pending) = pending_reorder {
+            let current_response = forward_ohttp_request(&state, body).await;
+            let delayed_response = forward_ohttp_request(&state, pending.body).await;
+            let _ = pending.response.send(delayed_response);
+            return current_response;
+        }
+    }
+
+    #[cfg(feature = "e2e-faults")]
+    let duplicate_body = state.e2e_fault_controller.as_ref().and_then(|controller| {
+        controller
+            .duplicate_next_forward
+            .swap(false, Ordering::SeqCst)
+            .then(|| body.clone())
+    });
+
+    let first_response = forward_ohttp_request(&state, body).await;
 
     #[cfg(feature = "e2e-faults")]
     if let Some(duplicate_body) = duplicate_body {
-        let _ = state
-            .upstream
-            .post_ohttp(duplicate_body, state.config.max_response_bytes)
-            .await;
+        let _ = forward_ohttp_request(&state, duplicate_body).await;
     }
 
-    match first_response {
+    first_response
+}
+
+async fn forward_ohttp_request(state: &AppState, body: Bytes) -> Response {
+    match state
+        .upstream
+        .post_ohttp(body, state.config.max_response_bytes)
+        .await
+    {
         Ok(response_bytes) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "message/ohttp-res")],
@@ -146,7 +230,20 @@ async fn handle_e2e_duplicate_next_forward(State(state): State<AppState>) -> Sta
     let Some(controller) = state.e2e_fault_controller else {
         return StatusCode::NOT_FOUND;
     };
-    controller.store(true, Ordering::SeqCst);
+    controller
+        .duplicate_next_forward
+        .store(true, Ordering::SeqCst);
+    StatusCode::NO_CONTENT
+}
+
+#[cfg(feature = "e2e-faults")]
+async fn handle_e2e_reorder_next_forward(State(state): State<AppState>) -> StatusCode {
+    let Some(controller) = state.e2e_fault_controller else {
+        return StatusCode::NOT_FOUND;
+    };
+    controller
+        .reorder_next_forward
+        .store(true, Ordering::SeqCst);
     StatusCode::NO_CONTENT
 }
 

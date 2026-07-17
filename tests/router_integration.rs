@@ -14,7 +14,7 @@
 use std::net::SocketAddr;
 #[cfg(feature = "e2e-faults")]
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -57,6 +57,32 @@ async fn start_counting_ohttp_upstream() -> (String, Arc<AtomicUsize>) {
         axum::serve(listener, mock).await.unwrap();
     });
     (format!("http://{address}"), forwards)
+}
+
+#[cfg(feature = "e2e-faults")]
+async fn start_recording_ohttp_upstream() -> (String, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&received);
+    let mock = axum::Router::new().route(
+        "/v2/ohttp",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let observed = Arc::clone(&observed);
+            async move {
+                observed.lock().unwrap().push(body.to_vec());
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "message/ohttp-res")],
+                    body,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    (format!("http://{address}"), received)
 }
 
 // @scenario: release_privacy_multidevice_certification.feature:Faulted delivery still converges deterministically
@@ -128,19 +154,80 @@ async fn e2e_control_route_arms_one_duplicate_opaque_forward() {
     );
 }
 
+// @scenario: release_privacy_multidevice_certification.feature:Faulted delivery still converges deterministically
+#[cfg(feature = "e2e-faults")]
+#[tokio::test]
+async fn e2e_control_route_reorders_two_concurrent_opaque_forwards() {
+    let (gateway_url, received) = start_recording_ohttp_upstream().await;
+    let state = build_test_state(65_536, &gateway_url).with_e2e_fault_controller();
+    let app = build_router(state);
+    let arm_request = Request::builder()
+        .method(http::Method::POST)
+        .uri("/__e2e/reorder-next-forward")
+        .body(Body::empty())
+        .unwrap();
+    let arm_response = app.clone().oneshot(arm_request).await.unwrap();
+    assert_eq!(arm_response.status(), StatusCode::NO_CONTENT);
+
+    let first_request = Request::builder()
+        .method(http::Method::POST)
+        .uri("/v2/ohttp")
+        .header(header::CONTENT_TYPE, "message/ohttp-req")
+        .body(Body::from(vec![0x11]))
+        .unwrap();
+    let first = tokio::spawn(app.clone().oneshot(first_request));
+    tokio::task::yield_now().await;
+
+    let second_request = Request::builder()
+        .method(http::Method::POST)
+        .uri("/v2/ohttp")
+        .header(header::CONTENT_TYPE, "message/ohttp-req")
+        .body(Body::from(vec![0x22]))
+        .unwrap();
+    let second_response = app.oneshot(second_request).await.unwrap();
+    let first_response = first.await.unwrap().unwrap();
+
+    assert_eq!(second_response.status(), StatusCode::OK);
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(second_response.into_body(), 64)
+            .await
+            .unwrap()
+            .as_ref(),
+        &[0x22]
+    );
+    assert_eq!(
+        axum::body::to_bytes(first_response.into_body(), 64)
+            .await
+            .unwrap()
+            .as_ref(),
+        &[0x11]
+    );
+    assert_eq!(
+        received.lock().unwrap().as_slice(),
+        &[vec![0x22], vec![0x11]],
+        "the successor must reach the upstream before the delayed opaque request"
+    );
+}
+
 // @scenario: router :: production build omits E2E fault control route
 #[tokio::test]
 async fn production_router_omits_e2e_fault_control_route() {
     let state = build_test_state(65_536, "http://127.0.0.1:19999");
     let app = build_router(state);
-    let request = Request::builder()
-        .method(http::Method::POST)
-        .uri("/__e2e/duplicate-next-forward")
-        .body(Body::empty())
-        .unwrap();
+    for path in [
+        "/__e2e/duplicate-next-forward",
+        "/__e2e/reorder-next-forward",
+    ] {
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
 
-    let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
 }
 
 // @scenario: router :: health endpoint returns 200 ok
