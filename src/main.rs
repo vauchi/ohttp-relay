@@ -15,6 +15,8 @@
 //! All configuration is via environment variables. See `config::RelayConfig`.
 
 use std::sync::Arc;
+#[cfg(feature = "e2e-faults")]
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tracing::{error, info};
@@ -53,6 +55,8 @@ async fn main() {
         upstream,
         rate_limiter,
         key_cache,
+        #[cfg(feature = "e2e-faults")]
+        e2e_fault_controller: Some(Arc::new(AtomicBool::new(false))),
     };
     let app = build_router(state);
 

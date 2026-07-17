@@ -39,6 +39,8 @@ pub fn build_test_state(max_request_bytes: usize, gateway_url: &str) -> AppState
         upstream,
         rate_limiter: None,
         key_cache: None,
+        #[cfg(feature = "e2e-faults")]
+        e2e_fault_controller: None,
     }
 }
 
@@ -68,6 +70,8 @@ pub fn build_test_state_with_limits(
         upstream,
         rate_limiter: None,
         key_cache: None,
+        #[cfg(feature = "e2e-faults")]
+        e2e_fault_controller: None,
     }
 }
 
@@ -93,6 +97,8 @@ pub fn build_test_state_with_rate_limit(gateway_url: &str, rate_limit_per_sec: u
         upstream,
         rate_limiter,
         key_cache: None,
+        #[cfg(feature = "e2e-faults")]
+        e2e_fault_controller: None,
     }
 }
 

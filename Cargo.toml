@@ -18,6 +18,9 @@ flame = ["dep:tracing-flame"]
 # Tests that need shared state constructors must enable this feature, e.g.:
 #   cargo test --features test-utils
 test-utils = []
+# Compiles test-only opaque-forward delivery faults. Production builds omit
+# this feature, so their environment cannot enable a fault mode.
+e2e-faults = []
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "tracing"] }

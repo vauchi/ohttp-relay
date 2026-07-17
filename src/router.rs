@@ -4,7 +4,7 @@
 
 //! Axum router and HTTP handler implementations.
 //!
-//! Three endpoints:
+//! Production endpoints:
 //! - `POST /v2/ohttp`     — forward encrypted OHTTP blob to upstream gateway
 //! - `GET  /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway
 //! - `GET  /health`       — local health check (no upstream call)
@@ -15,6 +15,8 @@
 //! - Request bodies above `max_request_bytes` are rejected before forwarding.
 
 use std::sync::Arc;
+#[cfg(feature = "e2e-faults")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::{
     Router,
@@ -41,15 +43,43 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
     /// TTL cache for upstream OHTTP key config. `None` if disabled (TTL = 0).
     pub key_cache: Option<Arc<KeyConfigCache>>,
+    /// E2E-only one-shot opaque-forward controller. Absent from production builds.
+    #[cfg(feature = "e2e-faults")]
+    pub e2e_fault_controller: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(feature = "e2e-faults")]
+impl AppState {
+    /// Enable the E2E-only opaque-forward fault controller without arming it.
+    pub fn with_e2e_fault_controller(mut self) -> Self {
+        self.e2e_fault_controller = Some(Arc::new(AtomicBool::new(false)));
+        self
+    }
+
+    /// Duplicate the next opaque forward and preserve its original response.
+    pub fn with_duplicate_first_forward(self) -> Self {
+        let state = self.with_e2e_fault_controller();
+        state
+            .e2e_fault_controller
+            .as_ref()
+            .expect("E2E fault controller is initialized")
+            .store(true, Ordering::SeqCst);
+        state
+    }
 }
 
 /// Build the router with all routes wired up.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(handle_health))
         .route("/v2/ohttp", post(handle_ohttp_forward))
-        .route("/v2/ohttp-key", get(handle_ohttp_key))
-        .with_state(state)
+        .route("/v2/ohttp-key", get(handle_ohttp_key));
+    #[cfg(feature = "e2e-faults")]
+    let router = router.route(
+        "/__e2e/duplicate-next-forward",
+        post(handle_e2e_duplicate_next_forward),
+    );
+    router.with_state(state)
 }
 
 /// `GET /health` — always returns 200 OK with a plain-text body.
@@ -77,11 +107,27 @@ async fn handle_ohttp_forward(State(state): State<AppState>, context: RequestCon
         "forwarding OHTTP blob to upstream gateway"
     );
 
-    match state
+    #[cfg(feature = "e2e-faults")]
+    let duplicate_body = state
+        .e2e_fault_controller
+        .as_ref()
+        .filter(|remaining| remaining.swap(false, Ordering::SeqCst))
+        .map(|_| body.clone());
+
+    let first_response = state
         .upstream
         .post_ohttp(body, state.config.max_response_bytes)
-        .await
-    {
+        .await;
+
+    #[cfg(feature = "e2e-faults")]
+    if let Some(duplicate_body) = duplicate_body {
+        let _ = state
+            .upstream
+            .post_ohttp(duplicate_body, state.config.max_response_bytes)
+            .await;
+    }
+
+    match first_response {
         Ok(response_bytes) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "message/ohttp-res")],
@@ -93,6 +139,15 @@ async fn handle_ohttp_forward(State(state): State<AppState>, context: RequestCon
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
+}
+
+#[cfg(feature = "e2e-faults")]
+async fn handle_e2e_duplicate_next_forward(State(state): State<AppState>) -> StatusCode {
+    let Some(controller) = state.e2e_fault_controller else {
+        return StatusCode::NOT_FOUND;
+    };
+    controller.store(true, Ordering::SeqCst);
+    StatusCode::NO_CONTENT
 }
 
 /// `GET /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway.

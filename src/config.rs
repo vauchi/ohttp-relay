@@ -101,7 +101,6 @@ impl RelayConfig {
             parse_usize(vars, "OHTTP_RELAY_CLIENT_IP_HEADER_TRUSTED_PROXIES", "0")?;
 
         let key_cache_ttl_secs = parse_u64(vars, "OHTTP_RELAY_KEY_CACHE_TTL_SECS", "300")?;
-
         Ok(RelayConfig {
             listen_addr,
             gateway_url,
