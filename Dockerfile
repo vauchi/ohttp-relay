@@ -37,13 +37,21 @@ RUN cd ohttp-relay && cargo build --release
 ARG BUILD_INFO='{"sha":"development","ref":"local","built":"unknown"}'
 RUN echo "${BUILD_INFO}" > /tmp/build-info.json
 
+# Stage libgcc_s.so.1 at its native multiarch path so the runtime COPY below
+# is arch-agnostic: x86_64-linux-gnu on amd64, aarch64-linux-gnu on arm64.
+# Required to build this image natively on the arm64 Pi runner.
+RUN set -eux; \
+    lib="$(find /lib /usr/lib -name 'libgcc_s.so.1' | head -n1)"; \
+    mkdir -p "/staging$(dirname "$lib")"; \
+    cp "$lib" "/staging$(dirname "$lib")/"
+
 # Runtime stage — distroless glibc without unused OpenSSL libraries.
 # Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
 FROM gcr.io/distroless/base-nossl-debian12@sha256:36e60081779eefd6a7dc9796e6aafaecd632bc282a8ba76fdb7c8f89a75ea6c7
 
 # Rust binaries (and the C code in aws-lc-rs) still need libgcc_s for panic
-# unwinding. base-nossl omits it, so copy the one from the builder stage.
-COPY --from=builder /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1
+# unwinding. base-nossl omits it; staged arch-agnostically in the builder above.
+COPY --from=builder /staging/ /
 
 COPY --from=builder /app/ohttp-relay/target/release/vauchi-ohttp-relay /usr/local/bin/
 COPY --from=builder /tmp/build-info.json /usr/share/build-info.json
