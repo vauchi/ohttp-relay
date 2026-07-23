@@ -428,23 +428,21 @@ publish:package:ohttp-relay:
 # Promote the SHA-tagged image to :latest only from main and only after
 # container scanning. Tag pipelines keep their immutable SHA image; excluding
 # them prevents an older tag pipeline from rolling :latest backward.
+# Retag :SHA as :latest with crane (daemonless) — this was the last
+# dind-dependent job after 5c625d2b converted the builds; dind cannot
+# start on the rootless runners, which failed every nightly main
+# pipeline since 2026-07-20. A remote retag also cannot hit the dind
+# tag-visibility race.
 promote:latest:
+  extends: [.crane-tools, .timeout-quick]
   stage: deploy
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27
-  tags: [docker]
-  services:
-    - ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:dind
   needs:
     - job: build:docker
     - job: container_scanning
   script:
-    - |
-      set -euo pipefail
-      echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
-      docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-      docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:latest
-      docker push $CI_REGISTRY_IMAGE:latest
-      echo "✅ Promoted $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA to :latest"
+    - crane auth login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - crane tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" latest
+    - echo "✅ Promoted $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA to :latest"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
