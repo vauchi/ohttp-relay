@@ -16,7 +16,7 @@
 # Shared templates
 include:
   - project: 'vauchi/scripts'
-    ref: ci-templates-v2026.07.6
+    ref: ci-templates-v2026.07.11
     file:
       - '/ci-templates/rust-base.yml'
       - '/ci-templates/security.yml'
@@ -48,7 +48,7 @@ stages:
   - trigger
 
 variables:
-  VAUCHI_SCRIPTS_REF: "ci-templates-v2026.07.6"
+  VAUCHI_SCRIPTS_REF: "ci-templates-v2026.07.11"
   CS_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
 
 # ============================================================
@@ -67,7 +67,7 @@ lint:format:
   needs: []
 
 lint:clippy:
-  extends: [.rust-runner-readonly, .lint-clippy, .validation-rust, .timeout-quick]
+  extends: [.rust-runner-readonly, .lint-clippy, .validation-rust, .timeout-cold-rebuild]
   needs: []
 
 lint:duplicates:
@@ -98,7 +98,7 @@ check:release-safety:
 
 # MR: fast nextest (no coverage overhead)
 test:
-  extends: [.rust-runner, .validation-rust, .timeout-standard]
+  extends: [.rust-runner, .validation-rust, .timeout-cold-rebuild]
   stage: test
   needs:
     - job: lint:format
@@ -113,7 +113,7 @@ test:
 
 # Main: full coverage with llvm-cov
 coverage:
-  extends: [.coverage-job, .rust-runner, .timeout-long]
+  extends: [.coverage-job, .rust-runner, .timeout-cold-rebuild]
   before_script:
     - !reference [.self-hosted, before_script]
     - !reference [.git-credentials, before_script]
