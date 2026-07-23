@@ -133,16 +133,15 @@ mutation:nightly:
 # Fuzz Stage (nightly, libfuzzer via cargo-fuzz)
 # ============================================================
 
-# Schedule-only libfuzzer run. Same advisory rationale as relay:
-# fuzz crashes are reviewed offline from the artifacts upload, not
-# gated in the pipeline. Audited 2026-04-22 T1.2/T2.5.
+# Schedule-only libfuzzer run. A crash is an operationally blocking finding:
+# the job publishes the reproducer and fails the scheduled pipeline.
 fuzz:nightly:
   extends: [.rust-runner]
   timeout: 12h
   stage: mutation
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $FUZZ_ENABLED == "true"
-  allow_failure: true
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  allow_failure: false
   script:
     - |
       # cargo-fuzz requires nightly for -Zsanitizer=address
@@ -153,7 +152,8 @@ fuzz:nightly:
       FUZZ_DURATION="${FUZZ_DURATION_SECS:-300}"
       FUZZ_JOBS="${FUZZ_PARALLEL_JOBS:-1}"
       REPORT_DIR="../fuzz-report"
-      mkdir -p "$REPORT_DIR"
+      COVERAGE_REPORT_DIR="$REPORT_DIR/coverage"
+      mkdir -p "$COVERAGE_REPORT_DIR"
 
       TARGETS="fuzz_validate_gateway_url"
 
@@ -185,8 +185,36 @@ fuzz:nightly:
       echo "  </testsuite>" >> "$REPORT_DIR/fuzz-junit.xml"
       echo "</testsuites>" >> "$REPORT_DIR/fuzz-junit.xml"
 
-      echo "=== Fuzz Summary: Targets=${TARGET_COUNT}, Passed=$PASSED, Crashes=$FAILED ==="
-      [ "$FAILED" -eq 0 ] || exit 1
+      COVERAGE_FAILED=0
+      TARGET_TRIPLE=$(rustc +nightly -vV | awk '/^host:/ { print $2 }')
+      NIGHTLY_SYSROOT=$(rustc +nightly --print sysroot)
+      LLVM_COV="$NIGHTLY_SYSROOT/lib/rustlib/$TARGET_TRIPLE/bin/llvm-cov"
+      for t in $TARGETS; do
+        echo "COVERAGE: ${t}"
+        if cargo +nightly fuzz coverage "$t"; then
+          COVERAGE_BINARY=$(find target -type f \
+            -path "*/coverage/*/release/${t}" | head -n 1)
+          COVERAGE_PROFILE="coverage/${t}/coverage.profdata"
+          if [ -z "$COVERAGE_BINARY" ]; then
+            echo "COVERAGE-BINARY-MISSING:${t}"
+            COVERAGE_FAILED=$((COVERAGE_FAILED + 1))
+          elif "$LLVM_COV" report "$COVERAGE_BINARY" \
+            --instr-profile="$COVERAGE_PROFILE" \
+            --ignore-filename-regex='(/.cargo/registry|/rustc/)' \
+            --summary-only > "$COVERAGE_REPORT_DIR/${t}.txt"; then
+            cat "$COVERAGE_REPORT_DIR/${t}.txt"
+          else
+            echo "COVERAGE-REPORT-FAILED:${t}"
+            COVERAGE_FAILED=$((COVERAGE_FAILED + 1))
+          fi
+        else
+          echo "COVERAGE-REPLAY-FAILED:${t}"
+          COVERAGE_FAILED=$((COVERAGE_FAILED + 1))
+        fi
+      done
+
+      echo "=== Fuzz Summary: Targets=${TARGET_COUNT}, Passed=$PASSED, Crashes=$FAILED, Coverage failures=$COVERAGE_FAILED ==="
+      [ "$FAILED" -eq 0 ] && [ "$COVERAGE_FAILED" -eq 0 ]
   cache:
     key: fuzz-corpus-ohttp-relay
     paths:
@@ -196,6 +224,7 @@ fuzz:nightly:
     when: always
     paths:
       - fuzz/artifacts/
+      - fuzz/coverage/
       - fuzz-report/
     reports:
       junit: fuzz-report/fuzz-junit.xml
@@ -549,8 +578,7 @@ dast:zap:
       # ZAP baseline scan against HTTP endpoints
       zap-baseline.py -t http://ohttp-relay:8082 -r zap-report.html -J zap-report.json
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
+    - if: $CI_PIPELINE_SOURCE == "schedule"
   allow_failure: true
   artifacts:
     paths:

@@ -10,6 +10,7 @@ import unittest
 
 
 CI_CONFIG = Path(__file__).parents[1] / ".gitlab-ci.yml"
+FUZZ_ROOT = Path(__file__).parents[1] / "fuzz"
 TOP_LEVEL_KEY = re.compile(r"^[A-Za-z0-9_.:-]+:\s*(?:#.*)?$")
 
 
@@ -63,6 +64,40 @@ class ReleaseSafetyContractTests(unittest.TestCase):
         self.assertIn('$CI_PIPELINE_SOURCE == "merge_request_event"', contract)
         self.assertIn("$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH", contract)
         self.assertIn("$CI_COMMIT_TAG =~ /^v", contract)
+
+
+class ScheduledSecurityContractTests(unittest.TestCase):
+    def test_fuzz_crashes_block_and_seeded_coverage_is_retained(self) -> None:
+        fuzz = job_section("fuzz:nightly")
+
+        self.assertIn("  allow_failure: false", fuzz)
+        self.assertIn('cargo +nightly fuzz coverage "$t"', fuzz)
+        self.assertIn('"$LLVM_COV" report', fuzz)
+        self.assertIn("- fuzz/coverage/", fuzz)
+        self.assertIn('$CI_PIPELINE_SOURCE == "schedule"', fuzz)
+        self.assertNotIn("FUZZ_ENABLED", fuzz)
+
+        target_files = list((FUZZ_ROOT / "fuzz_targets").glob("*.rs"))
+        configured = set(
+            re.search(r'TARGETS="([^"]+)"', fuzz, re.DOTALL).group(1).split()
+        )
+        actual = {target_file.stem for target_file in target_files}
+        self.assertEqual(configured, actual)
+
+        for target_file in target_files:
+            target = target_file.stem
+            seeds = [
+                path
+                for path in (FUZZ_ROOT / "corpus" / target).glob("seed-*")
+                if path.is_file()
+            ]
+            self.assertTrue(seeds, f"{target} has no curated seed corpus")
+
+    def test_ohttp_zap_runs_on_schedules_without_a_manual_gate(self) -> None:
+        zap = job_section("dast:zap")
+
+        self.assertIn('$CI_PIPELINE_SOURCE == "schedule"', zap)
+        self.assertNotIn("when: manual", zap)
 
 
 if __name__ == "__main__":
