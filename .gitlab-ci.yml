@@ -57,6 +57,12 @@ variables:
 
 auto-tag:version:
   extends: .auto-tag
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "pipeline" || $CI_PIPELINE_SOURCE == "trigger"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # ============================================================
 # Lint Stage — Preflight Gate (change-based)
@@ -451,6 +457,8 @@ publish:package:ohttp-relay:
         upload_package "${CI_COMMIT_TAG}"
       fi
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
 
@@ -473,6 +481,8 @@ promote:latest:
     - crane tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" latest
     - echo "✅ Promoted $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA to :latest"
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # ============================================================
@@ -604,6 +614,8 @@ deploy:trigger:
     DEPLOY_SERVICE: ohttp-relay
     DEPLOY_IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -665,6 +677,15 @@ rc:security:audit:
 
 pages:
   extends: .badges-pages
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "pipeline" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: always
 
 # ============================================================
 # Trigger Stage — Downstream E2E
@@ -679,3 +700,8 @@ trigger:e2e:
 
 github-mirror:
   extends: .github-mirror
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/

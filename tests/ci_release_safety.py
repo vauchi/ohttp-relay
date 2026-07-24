@@ -31,6 +31,19 @@ def configured_stages() -> list[str]:
 
 
 class ReleaseSafetyContractTests(unittest.TestCase):
+    def assert_schedule_excluded_before_default_branch(self, name: str) -> None:
+        job = job_section(name)
+        schedule = '$CI_PIPELINE_SOURCE == "schedule"'
+        default_branch = "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+
+        self.assertIn(schedule, job)
+        self.assertIn(default_branch, job)
+        self.assertLess(job.index(schedule), job.index(default_branch))
+        self.assertRegex(
+            job,
+            r'\$CI_PIPELINE_SOURCE == "schedule"\n\s+when: never',
+        )
+
     def test_publication_waits_for_blocking_security_stages(self) -> None:
         publish = job_section("publish:package:ohttp-relay")
         stages = configured_stages()
@@ -64,6 +77,18 @@ class ReleaseSafetyContractTests(unittest.TestCase):
         self.assertIn('$CI_PIPELINE_SOURCE == "merge_request_event"', contract)
         self.assertIn("$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH", contract)
         self.assertIn("$CI_COMMIT_TAG =~ /^v", contract)
+
+    def test_schedules_cannot_run_release_side_effects(self) -> None:
+        for name in (
+            "auto-tag:version",
+            "publish:package:ohttp-relay",
+            "promote:latest",
+            "deploy:trigger",
+            "pages",
+            "github-mirror",
+        ):
+            with self.subTest(job=name):
+                self.assert_schedule_excluded_before_default_branch(name)
 
 
 class ScheduledSecurityContractTests(unittest.TestCase):
