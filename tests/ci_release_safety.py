@@ -92,6 +92,26 @@ class ReleaseSafetyContractTests(unittest.TestCase):
 
 
 class ScheduledSecurityContractTests(unittest.TestCase):
+    def test_schedule_cannot_publish_deploy_promote_or_fan_out(self) -> None:
+        for name in (
+            "auto-tag:version",
+            "publish:package:ohttp-relay",
+            "promote:latest",
+            "deploy:trigger",
+            "pages",
+            "github-mirror",
+            "build:docker:arm64",
+            "build:docker:manifest",
+        ):
+            job = job_section(name)
+            schedule = job.index('$CI_PIPELINE_SOURCE == "schedule"')
+            never = job.index("when: never", schedule)
+            branch = job.index("$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH")
+            self.assertLess(schedule, never, name)
+            self.assertLess(never, branch, name)
+
+        self.assertNotIn("trigger:e2e:", CI_CONFIG.read_text(encoding="utf-8"))
+
     def test_fuzz_crashes_block_and_seeded_coverage_is_retained(self) -> None:
         fuzz = job_section("fuzz:nightly")
 
