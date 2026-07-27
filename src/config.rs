@@ -84,7 +84,11 @@ impl RelayConfig {
         let gateway_url = get_required(vars, "OHTTP_RELAY_GATEWAY_URL")?;
         let gateway_url = validate_gateway_url(&gateway_url)?;
 
-        let max_request_bytes = parse_usize(vars, "OHTTP_RELAY_MAX_REQUEST_BYTES", "65536")?;
+        // Symmetric with max_response_bytes (128 KiB). A legitimate client
+        // send can approach the response size — e.g. a device-sync batch or a
+        // cold-start genesis payload — so a request cap at half the response
+        // cap wrongly rejects valid uploads (F4 six-device send timeout).
+        let max_request_bytes = parse_usize(vars, "OHTTP_RELAY_MAX_REQUEST_BYTES", "131072")?;
         let max_response_bytes = parse_usize(vars, "OHTTP_RELAY_MAX_RESPONSE_BYTES", "131072")?;
         let max_key_response_bytes =
             parse_usize(vars, "OHTTP_RELAY_MAX_KEY_RESPONSE_BYTES", "4096")?;
@@ -367,7 +371,10 @@ mod tests {
         let cfg =
             RelayConfig::from_map(&vars).expect("config with only required var should succeed");
         assert_eq!(cfg.listen_addr.to_string(), "0.0.0.0:8082");
-        assert_eq!(cfg.max_request_bytes, 65536);
+        assert_eq!(
+            cfg.max_request_bytes, 131072,
+            "default max_request_bytes should be 128 KiB, symmetric with the response cap"
+        );
         assert_eq!(
             cfg.max_response_bytes, 131072,
             "default max_response_bytes should be 128 KiB"
