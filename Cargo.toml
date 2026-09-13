@@ -54,3 +54,8 @@ tower = { version = "0.5", features = ["util"] }
 name = "router_integration"
 path = "tests/router_integration.rs"
 required-features = ["test-utils"]
+
+[[test]]
+name = "client_ip"
+path = "tests/client_ip.rs"
+required-features = ["test-utils"]
