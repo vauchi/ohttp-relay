@@ -15,23 +15,31 @@ use crate::rate_limit::RateLimiter;
 use crate::router::AppState;
 use crate::upstream::UpstreamClient;
 
+/// Baseline relay config for tests; callers override only what they exercise.
+pub fn test_config(gateway_url: &str) -> RelayConfig {
+    RelayConfig {
+        listen_addr: "127.0.0.1:0".parse().unwrap(),
+        gateway_url: gateway_url.to_owned(),
+        max_request_bytes: 65_536,
+        max_response_bytes: 131_072,
+        max_key_response_bytes: 4_096,
+        rate_limit_per_sec: 0,
+        rate_limit_max_buckets: 100_000,
+        request_timeout: Duration::from_secs(5),
+        client_ip_header: None,
+        client_ip_header_trusted_proxies: 0,
+        key_cache_ttl: Duration::ZERO,
+    }
+}
+
 /// Build an `AppState` with the given body limit and gateway URL.
 ///
 /// Rate limiting and key caching are disabled; this is the minimal state
 /// needed for most router integration tests.
 pub fn build_test_state(max_request_bytes: usize, gateway_url: &str) -> AppState {
     let config = RelayConfig {
-        listen_addr: "127.0.0.1:0".parse().unwrap(),
-        gateway_url: gateway_url.to_owned(),
         max_request_bytes,
-        max_response_bytes: 131_072,
-        max_key_response_bytes: 4_096,
-        rate_limit_per_sec: 0, // disabled in most tests
-        rate_limit_max_buckets: 100_000,
-        request_timeout: Duration::from_secs(5),
-        client_ip_header: None,
-        client_ip_header_trusted_proxies: 0,
-        key_cache_ttl: Duration::ZERO,
+        ..test_config(gateway_url)
     };
     let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
     AppState {
@@ -52,17 +60,10 @@ pub fn build_test_state_with_limits(
     gateway_url: &str,
 ) -> AppState {
     let config = RelayConfig {
-        listen_addr: "127.0.0.1:0".parse().unwrap(),
-        gateway_url: gateway_url.to_owned(),
         max_request_bytes,
         max_response_bytes,
         max_key_response_bytes,
-        rate_limit_per_sec: 0,
-        rate_limit_max_buckets: 100_000,
-        request_timeout: Duration::from_secs(5),
-        client_ip_header: None,
-        client_ip_header_trusted_proxies: 0,
-        key_cache_ttl: Duration::ZERO,
+        ..test_config(gateway_url)
     };
     let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
     AppState {
@@ -78,17 +79,8 @@ pub fn build_test_state_with_limits(
 /// Build an `AppState` with a per-IP rate limiter enabled.
 pub fn build_test_state_with_rate_limit(gateway_url: &str, rate_limit_per_sec: u32) -> AppState {
     let config = RelayConfig {
-        listen_addr: "127.0.0.1:0".parse().unwrap(),
-        gateway_url: gateway_url.to_owned(),
-        max_request_bytes: 65_536,
-        max_response_bytes: 131_072,
-        max_key_response_bytes: 4_096,
         rate_limit_per_sec,
-        rate_limit_max_buckets: 100_000,
-        request_timeout: Duration::from_secs(5),
-        client_ip_header: None,
-        client_ip_header_trusted_proxies: 0,
-        key_cache_ttl: Duration::ZERO,
+        ..test_config(gateway_url)
     };
     let rate_limiter = Some(Arc::new(RateLimiter::new(rate_limit_per_sec, 100_000)));
     let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
