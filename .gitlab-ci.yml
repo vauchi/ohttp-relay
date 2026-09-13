@@ -110,7 +110,10 @@ test:
     - job: lint:format
       optional: true
   script:
-    - cargo nextest run --profile ci --all-targets
+    # Without test-utils, cargo silently skips every target that declares it
+    # in required-features — router_integration, server_lifecycle and
+    # client_ip, 46 of the suite's 86 tests.
+    - cargo nextest run --profile ci --all-targets --features test-utils
   artifacts:
     when: always
     reports:
