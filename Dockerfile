@@ -17,7 +17,7 @@ ARG HUB=docker.io/library
 # base also installs cargo-chef once instead of twice.
 # Pin cargo-chef so the planner binary is reproducible and not affected by a
 # compromised future release.
-FROM ${HUB}/rust:1.93-bookworm AS chef
+FROM ${HUB}/rust:1.93-trixie AS chef
 RUN cargo install cargo-chef --version 0.1.77
 WORKDIR /app
 
@@ -55,7 +55,7 @@ RUN set -eux; \
 
 # Runtime stage — distroless glibc without unused OpenSSL libraries.
 # Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
-FROM gcr.io/distroless/base-nossl-debian12@sha256:36e60081779eefd6a7dc9796e6aafaecd632bc282a8ba76fdb7c8f89a75ea6c7
+FROM gcr.io/distroless/base-nossl-debian13@sha256:af5cb8dd589b8520b8c06bebb9efb73d7e16406cab58e85c51761fff49d370a0
 
 # Rust binaries (and the C code in aws-lc-rs) still need libgcc_s for panic
 # unwinding. base-nossl omits it; staged arch-agnostically in the builder above.
