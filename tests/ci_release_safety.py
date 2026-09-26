@@ -90,6 +90,31 @@ class ReleaseSafetyContractTests(unittest.TestCase):
             with self.subTest(job=name):
                 self.assert_schedule_excluded_before_default_branch(name)
 
+    def test_upstream_rebuilds_cannot_promote_or_deploy(self) -> None:
+        # A verify pipeline rebuilds the same Cargo.lock-pinned sources with
+        # a newer base: nothing new to ship, and :latest must not move.
+        rebuild = (
+            '$CI_PIPELINE_SOURCE == "pipeline" || '
+            '$CI_PIPELINE_SOURCE == "trigger" || '
+            '$CI_PIPELINE_SOURCE == "api"'
+        )
+        for name in ("promote:latest", "deploy:trigger"):
+            with self.subTest(job=name):
+                job = job_section(name)
+                self.assertIn(rebuild, job)
+                never = job.index("when: never", job.index(rebuild))
+                branch = job.index("$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH")
+                self.assertLess(never, branch)
+
+    def test_deploy_trigger_pins_the_built_digest(self) -> None:
+        build = job_section("build:docker")
+        self.assertIn('--digest-file "$CI_PROJECT_DIR/image.digest"', build)
+        self.assertIn("dotenv: deploy-image.env", build)
+        self.assertIn(
+            "DEPLOY_IMAGE_DIGEST: $DEPLOY_IMAGE_DIGEST",
+            job_section("deploy:trigger"),
+        )
+
 
 class ScheduledSecurityContractTests(unittest.TestCase):
     def test_schedule_cannot_publish_deploy_promote_or_fan_out(self) -> None:
