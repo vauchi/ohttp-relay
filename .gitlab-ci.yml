@@ -290,9 +290,15 @@ container_scanning:
 # has to clear the same gate. CS_IMAGE is a global pinned to the amd64 :$SHA;
 # until this job existed the published arm64 image was never scanned at all.
 # Trivy reads the remote image, so this still runs on the amd64 runner.
+# Optional because build:docker:arm64 never runs on schedules: a required
+# need made GitLab reject every nightly pipeline (fuzz, mutation, scans
+# included) from 2026-09-08. Nightly, this scans the image main already
+# pushed for $CI_COMMIT_SHA.
 container_scanning:arm64:
   extends: container_scanning
-  needs: ["build:docker:arm64"]
+  needs:
+    - job: "build:docker:arm64"
+      optional: true
   variables:
     CS_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA-arm64
 
