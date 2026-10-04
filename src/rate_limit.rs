@@ -19,6 +19,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tracing::info;
+
 use crate::clock::{Clock, StdClock};
 
 /// Mutable token-bucket state for a single IP.
@@ -87,6 +89,31 @@ impl RateLimiter {
     /// `max_buckets` bounds the per-IP map size; set to 0 to disable the cap.
     pub fn new(requests_per_sec: u32, max_buckets: usize) -> Self {
         Self::with_clock(requests_per_sec, max_buckets, Arc::new(StdClock))
+    }
+
+    /// The shared limiter the server runs with, or `None` when the rate is 0.
+    ///
+    /// Spawns the task that drops buckets idle for half an hour every ten
+    /// minutes, so memory does not grow without bound under diverse source
+    /// IPs. Needs a Tokio runtime.
+    pub fn spawn_if_enabled(requests_per_sec: u32, max_buckets: usize) -> Option<Arc<Self>> {
+        if requests_per_sec == 0 {
+            info!("rate limiting disabled (OHTTP_RELAY_RATE_LIMIT_PER_SEC=0)");
+            return None;
+        }
+
+        let limiter = Arc::new(Self::new(requests_per_sec, max_buckets));
+        let limiter_cleanup = Arc::clone(&limiter);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(600));
+            interval.tick().await; // skip initial immediate tick
+            loop {
+                interval.tick().await;
+                limiter_cleanup.evict_stale(Duration::from_secs(1800));
+            }
+        });
+
+        Some(limiter)
     }
 
     /// Create a new rate limiter with the given clock.
@@ -198,6 +225,47 @@ mod tests {
         fn now(&self) -> Instant {
             *self.now.lock().unwrap()
         }
+    }
+
+    fn ip(last: u8) -> IpAddr {
+        IpAddr::from([10, 0, 0, last])
+    }
+
+    fn bucket_count(limiter: &RateLimiter) -> usize {
+        limiter.buckets.lock().unwrap().len()
+    }
+
+    // @internal
+    #[test]
+    fn an_unbounded_limiter_keeps_a_bucket_per_ip() {
+        let clock = Arc::new(FakeClock::new());
+        let limiter = RateLimiter::with_clock(10, 0, Arc::clone(&clock));
+
+        for last in 1..=5 {
+            limiter.check(ip(last));
+            clock.advance(Duration::from_millis(1));
+        }
+
+        assert_eq!(bucket_count(&limiter), 5);
+    }
+
+    // @internal
+    #[test]
+    fn the_bucket_cap_evicts_to_three_quarters_only_once_exceeded() {
+        let clock = Arc::new(FakeClock::new());
+        let limiter = RateLimiter::with_clock(10, 4, Arc::clone(&clock));
+
+        for last in 1..=4 {
+            limiter.check(ip(last));
+            clock.advance(Duration::from_millis(1));
+        }
+        assert_eq!(bucket_count(&limiter), 4, "at the cap nothing is evicted");
+
+        limiter.check(ip(5));
+
+        assert_eq!(bucket_count(&limiter), 3, "over the cap the oldest go");
+        assert!(limiter.buckets.lock().unwrap().contains_key(&ip(5)));
+        assert!(!limiter.buckets.lock().unwrap().contains_key(&ip(1)));
     }
 
     #[test]

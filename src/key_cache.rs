@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 
+use tracing::info;
+
 use crate::clock::{Clock, StdClock};
 
 #[derive(Debug)]
@@ -37,6 +39,15 @@ impl KeyConfigCache {
     /// Create a new cache with the given TTL using the system clock.
     pub fn new(ttl: Duration) -> Self {
         Self::with_clock(ttl, Arc::new(StdClock))
+    }
+
+    /// The shared cache the server runs with, or `None` when the TTL is 0.
+    pub fn if_enabled(ttl: Duration) -> Option<Arc<Self>> {
+        if ttl.is_zero() {
+            info!("key config caching disabled (OHTTP_RELAY_KEY_CACHE_TTL_SECS=0)");
+            return None;
+        }
+        Some(Arc::new(Self::new(ttl)))
     }
 
     /// Create a new cache with the given TTL and clock.

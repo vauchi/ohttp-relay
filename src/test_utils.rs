@@ -77,11 +77,11 @@ pub fn build_test_state_with_limits(
 }
 
 /// Build an `AppState` with a per-IP rate limiter enabled.
+///
+/// The limiter takes the rate directly; `RelayConfig::rate_limit_per_sec`
+/// is only echoed in the start-up log, so the config keeps its baseline.
 pub fn build_test_state_with_rate_limit(gateway_url: &str, rate_limit_per_sec: u32) -> AppState {
-    let config = RelayConfig {
-        rate_limit_per_sec,
-        ..test_config(gateway_url)
-    };
+    let config = test_config(gateway_url);
     let rate_limiter = Some(Arc::new(RateLimiter::new(rate_limit_per_sec, 100_000)));
     let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
     AppState {

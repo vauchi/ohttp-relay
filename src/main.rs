@@ -14,8 +14,8 @@
 //!
 //! All configuration is via environment variables. See `config::RelayConfig`.
 
+#[cfg(feature = "e2e-faults")]
 use std::sync::Arc;
-use std::time::Duration;
 
 use tracing::{error, info};
 
@@ -46,8 +46,9 @@ async fn main() {
 
     log_startup(&config);
 
-    let rate_limiter = build_rate_limiter(config.rate_limit_per_sec, config.rate_limit_max_buckets);
-    let key_cache = build_key_cache(config.key_cache_ttl);
+    let rate_limiter =
+        RateLimiter::spawn_if_enabled(config.rate_limit_per_sec, config.rate_limit_max_buckets);
+    let key_cache = KeyConfigCache::if_enabled(config.key_cache_ttl);
     let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
 
     let state = AppState {
@@ -79,41 +80,6 @@ fn log_startup(config: &RelayConfig) {
         key_cache_ttl_secs = config.key_cache_ttl.as_secs(),
         "vauchi-ohttp-relay starting"
     );
-}
-
-/// Build the rate limiter and, if enabled, spawn a background task to evict
-/// stale entries so memory does not grow unbounded under diverse source IPs.
-fn build_rate_limiter(
-    rate_limit_per_sec: u32,
-    rate_limit_max_buckets: usize,
-) -> Option<Arc<RateLimiter>> {
-    if rate_limit_per_sec == 0 {
-        info!("rate limiting disabled (OHTTP_RELAY_RATE_LIMIT_PER_SEC=0)");
-        return None;
-    }
-
-    let limiter = Arc::new(RateLimiter::new(rate_limit_per_sec, rate_limit_max_buckets));
-    let limiter_cleanup = Arc::clone(&limiter);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(600));
-        interval.tick().await; // skip initial immediate tick
-        loop {
-            interval.tick().await;
-            limiter_cleanup.evict_stale(Duration::from_secs(1800));
-        }
-    });
-
-    Some(limiter)
-}
-
-/// Build the key config cache if a non-zero TTL is configured.
-fn build_key_cache(key_cache_ttl: Duration) -> Option<Arc<KeyConfigCache>> {
-    if key_cache_ttl.is_zero() {
-        info!("key config caching disabled (OHTTP_RELAY_KEY_CACHE_TTL_SECS=0)");
-        return None;
-    }
-
-    Some(Arc::new(KeyConfigCache::new(key_cache_ttl)))
 }
 
 #[cfg(not(feature = "flame"))]

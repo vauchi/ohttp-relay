@@ -2,8 +2,16 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+# The router and client-IP integration tests need `test-utils`, and the
+# E2E fault routes exist only with `e2e-faults`; without both, cargo-mutants
+# ran a suite that never reached those files and every mutant in them
+# survived (vauchi/private#504).
+additional_cargo_args = ["--features", "test-utils,e2e-faults"]
+
 # Skip binary entry-point functions that cannot be unit-tested:
 # - main(): requires full server lifecycle (binds port, awaits shutdown signal)
+# - log_startup(): an info-level log line and nothing else
+# - serve(): binds the socket and exits the process when it cannot
 # - shutdown_signal(): OS signal handler (SIGTERM/SIGINT)
 # - init_tracing(): global subscriber init (can only be set once per process)
 #
@@ -12,7 +20,9 @@
 exclude_re = [
     "src/main\\.rs:.* in main$",
     "src/main\\.rs:.* main with \\(\\)",
-    "src/main\\.rs:.* shutdown_signal",
+    "src/main\\.rs:.* replace log_startup",
+    "src/server\\.rs:.* replace serve with",
+    "src/server\\.rs:.* shutdown_signal",
     "src/main\\.rs:.* init_tracing",
 
     # Observability-only: the flamegraph profiler has no behavioral contract
@@ -26,4 +36,9 @@ exclude_re = [
     # (2026-07-06-ohttp-relay-pfc-violations). Re-enable once injected.
     "replace < with <= in KeyConfigCache::get",
     "replace < with <= in RateLimiter::evict_stale",
+
+    # The E2E reorder path gives up after a fixed 15 s; whether the pending
+    # entry it then drops is its own is only observable by waiting that out
+    # in real time.
+    "src/router\\.rs:.* replace == with != in handle_ohttp_forward",
 ]
