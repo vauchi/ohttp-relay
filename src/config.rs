@@ -312,6 +312,19 @@ mod tests {
         );
     }
 
+    // @scenario: config :: embedded credentials in gateway URL are rejected
+    #[test]
+    fn validate_gateway_url_rejects_a_username_or_a_password_alone() {
+        for url in [
+            "http://user@vauchi-relay:8080",
+            "http://:secret@vauchi-relay:8080",
+        ] {
+            let err = validate_gateway_url(url).unwrap_err();
+            assert!(matches!(err, ConfigError::Parse { .. }), "{url}");
+            assert!(err.to_string().contains("credentials"), "{url}: {err}");
+        }
+    }
+
     // @scenario: config :: valid HTTP gateway URL is accepted
     #[test]
     fn validate_gateway_url_accepts_valid_http() {

@@ -904,3 +904,20 @@ fn extract_client_ip_handles_ipv6_with_trusted_proxy() {
     let ip = extract_client_ip(&config, &headers, None);
     assert_eq!(ip, Some("2001:db8::1".parse().unwrap()));
 }
+
+// @scenario: router :: oversized request body is rejected before forwarding
+#[tokio::test]
+async fn the_limits_helper_request_cap_rejects_an_oversized_body() {
+    let state = build_test_state_with_limits(100, 4096, 4096, "http://127.0.0.1:19999");
+    let app = build_router(state);
+
+    let request = Request::builder()
+        .method(http::Method::POST)
+        .uri("/v2/ohttp")
+        .header(header::CONTENT_TYPE, "message/ohttp-req")
+        .body(Body::from(vec![0x11; 101]))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
