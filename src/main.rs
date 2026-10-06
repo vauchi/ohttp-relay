@@ -26,6 +26,7 @@ use vauchi_ohttp_relay::rate_limit::RateLimiter;
 use vauchi_ohttp_relay::router::E2eFaultController;
 use vauchi_ohttp_relay::router::{AppState, build_router};
 use vauchi_ohttp_relay::server;
+use vauchi_ohttp_relay::signed_key_cache::SignedKeyCache;
 use vauchi_ohttp_relay::upstream::UpstreamClient;
 
 #[tokio::main]
@@ -49,6 +50,7 @@ async fn main() {
     let rate_limiter =
         RateLimiter::spawn_if_enabled(config.rate_limit_per_sec, config.rate_limit_max_buckets);
     let key_cache = KeyConfigCache::if_enabled(config.key_cache_ttl);
+    let signed_key_cache = SignedKeyCache::if_enabled(config.key_cache_ttl);
     let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
 
     let state = AppState {
@@ -56,6 +58,7 @@ async fn main() {
         upstream,
         rate_limiter,
         key_cache,
+        signed_key_cache,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: Some(Arc::new(E2eFaultController::new())),
     };

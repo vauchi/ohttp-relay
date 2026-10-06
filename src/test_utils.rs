@@ -47,6 +47,7 @@ pub fn build_test_state(max_request_bytes: usize, gateway_url: &str) -> AppState
         upstream,
         rate_limiter: None,
         key_cache: None,
+        signed_key_cache: None,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }
@@ -71,6 +72,7 @@ pub fn build_test_state_with_limits(
         upstream,
         rate_limiter: None,
         key_cache: None,
+        signed_key_cache: None,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }
@@ -89,6 +91,28 @@ pub fn build_test_state_with_rate_limit(gateway_url: &str, rate_limit_per_sec: u
         upstream,
         rate_limiter,
         key_cache: None,
+        signed_key_cache: None,
+        #[cfg(feature = "e2e-faults")]
+        e2e_fault_controller: None,
+    }
+}
+
+/// Build an `AppState` whose signed key record cache runs on `clock`.
+pub fn build_test_state_with_signed_key_cache(
+    gateway_url: &str,
+    ttl: Duration,
+    clock: crate::signed_key_cache::UnixClock,
+) -> AppState {
+    let config = test_config(gateway_url);
+    let upstream = UpstreamClient::new(gateway_url, config.request_timeout);
+    AppState {
+        config,
+        upstream,
+        rate_limiter: None,
+        key_cache: None,
+        signed_key_cache: Some(Arc::new(
+            crate::signed_key_cache::SignedKeyCache::with_clock(ttl, clock),
+        )),
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }

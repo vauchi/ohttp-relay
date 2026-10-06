@@ -7,6 +7,7 @@
 //! Production endpoints:
 //! - `POST /v2/ohttp`     — forward encrypted OHTTP blob to upstream gateway
 //! - `GET  /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway
+//! - `GET  /v2/ohttp-key-signed` — proxy the gateway's signed key record
 //! - `GET  /health`       — local health check (no upstream call)
 //!
 //! Security invariants enforced here:
@@ -41,7 +42,8 @@ use crate::config::RelayConfig;
 use crate::key_cache::KeyConfigCache;
 use crate::rate_limit::RateLimiter;
 use crate::request::RequestContext;
-use crate::upstream::UpstreamClient;
+use crate::signed_key_cache::SignedKeyCache;
+use crate::upstream::{UpstreamClient, UpstreamError};
 
 /// Shared application state injected into every handler.
 #[derive(Clone)]
@@ -52,6 +54,8 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
     /// TTL cache for upstream OHTTP key config. `None` if disabled (TTL = 0).
     pub key_cache: Option<Arc<KeyConfigCache>>,
+    /// Window-bounded cache for the signed key record. `None` if disabled.
+    pub signed_key_cache: Option<Arc<SignedKeyCache>>,
     /// E2E-only one-shot opaque-forward controller. Absent from production builds.
     #[cfg(feature = "e2e-faults")]
     pub e2e_fault_controller: Option<Arc<E2eFaultController>>,
@@ -117,7 +121,8 @@ pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/health", get(handle_health))
         .route("/v2/ohttp", post(handle_ohttp_forward))
-        .route("/v2/ohttp-key", get(handle_ohttp_key));
+        .route("/v2/ohttp-key", get(handle_ohttp_key))
+        .route("/v2/ohttp-key-signed", get(handle_ohttp_key_signed));
     #[cfg(feature = "e2e-faults")]
     let router = router.route(
         "/__e2e/duplicate-next-forward",
@@ -308,6 +313,50 @@ async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
+}
+
+/// `GET /v2/ohttp-key-signed` — proxy the gateway's signed key record
+/// (#288). Clients verify it; the relay only bounds its cache by the window
+/// it signs. A 503 ("no signed key yet") passes through so clients can tell
+/// it from an unreachable gateway; nothing but a 200 is cached.
+#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.key_signed")]
+async fn handle_ohttp_key_signed(State(state): State<AppState>) -> Response {
+    if let Some(body) = state
+        .signed_key_cache
+        .as_ref()
+        .and_then(|cache| cache.get())
+    {
+        return signed_key_response(body);
+    }
+    match state
+        .upstream
+        .get_signed_key(state.config.max_key_response_bytes)
+        .await
+    {
+        Ok(body) => {
+            if let Some(ref cache) = state.signed_key_cache {
+                cache.set(body.clone());
+            }
+            signed_key_response(body)
+        }
+        Err(UpstreamError::Status(503)) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(e) => {
+            warn!(error = %e, "upstream gateway error on signed key fetch");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
+fn signed_key_response(body: Bytes) -> Response {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "application/vnd.vauchi.ohttp-key-signed",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 /// Build a `200 OK` response with the OHTTP key config body and optional fingerprint.

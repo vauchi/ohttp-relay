@@ -94,7 +94,33 @@ impl UpstreamClient {
         &self,
         max_key_response_bytes: usize,
     ) -> Result<OhttpKeyResponse, UpstreamError> {
-        let url = format!("{}/v2/ohttp-key", self.gateway_url);
+        let (body, key_fingerprint) = self
+            .get_bounded("/v2/ohttp-key", max_key_response_bytes)
+            .await?;
+        Ok(OhttpKeyResponse {
+            body,
+            key_fingerprint,
+        })
+    }
+
+    /// Fetch the gateway's signed key record (#288). Like the key, it carries
+    /// no client-derived data and is bounded by `max_key_response_bytes`.
+    pub async fn get_signed_key(
+        &self,
+        max_key_response_bytes: usize,
+    ) -> Result<Bytes, UpstreamError> {
+        let (body, _) = self
+            .get_bounded("/v2/ohttp-key-signed", max_key_response_bytes)
+            .await?;
+        Ok(body)
+    }
+
+    async fn get_bounded(
+        &self,
+        path: &str,
+        max_bytes: usize,
+    ) -> Result<(Bytes, Option<String>), UpstreamError> {
+        let url = format!("{}{path}", self.gateway_url);
 
         let agent = self.agent.clone();
         tokio::task::spawn_blocking(move || {
@@ -114,12 +140,8 @@ impl UpstreamClient {
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_owned());
 
-            let body = read_bounded_response(response, max_key_response_bytes)?;
-
-            Ok(OhttpKeyResponse {
-                body,
-                key_fingerprint,
-            })
+            let body = read_bounded_response(response, max_bytes)?;
+            Ok((body, key_fingerprint))
         })
         .await
         .map_err(|e| UpstreamError::Request(e.to_string()))?
