@@ -8,6 +8,7 @@
 //! - `POST /v2/ohttp`     — forward encrypted OHTTP blob to upstream gateway
 //! - `GET  /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway
 //! - `GET  /v2/ohttp-key-signed` — proxy the gateway's signed key record
+//! - `GET  /v2/ohttp-anchor-rollover` — proxy the gateway's anchor rollover chain
 //! - `GET  /health`       — local health check (no upstream call)
 //!
 //! Security invariants enforced here:
@@ -122,7 +123,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(handle_health))
         .route("/v2/ohttp", post(handle_ohttp_forward))
         .route("/v2/ohttp-key", get(handle_ohttp_key))
-        .route("/v2/ohttp-key-signed", get(handle_ohttp_key_signed));
+        .route("/v2/ohttp-key-signed", get(handle_ohttp_key_signed))
+        .route(
+            "/v2/ohttp-anchor-rollover",
+            get(handle_ohttp_anchor_rollover),
+        );
     #[cfg(feature = "e2e-faults")]
     let router = router.route(
         "/__e2e/duplicate-next-forward",
@@ -357,6 +362,30 @@ fn signed_key_response(body: Bytes) -> Response {
         body,
     )
         .into_response()
+}
+
+/// `GET /v2/ohttp-anchor-rollover` — proxy the gateway's anchor rollover
+/// chain (#288 decision 0.13). Uncached: clients ask only after their anchor
+/// stopped verifying, and they verify the chain themselves. A 404 ("no
+/// rollover") passes through so clients keep their anchor.
+#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.anchor_rollover")]
+async fn handle_ohttp_anchor_rollover(State(state): State<AppState>) -> Response {
+    match state.upstream.get_anchor_rollover().await {
+        Ok(body) => (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                "application/vnd.vauchi.ohttp-anchor-rollover",
+            )],
+            body,
+        )
+            .into_response(),
+        Err(UpstreamError::Status(404)) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            warn!(error = %e, "upstream gateway error on anchor rollover fetch");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
 }
 
 /// Build a `200 OK` response with the OHTTP key config body and optional fingerprint.

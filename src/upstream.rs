@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 
+const MAX_ANCHOR_ROLLOVER_BYTES: usize = 4096;
+
 /// Thin wrapper around a `ureq` agent bound to a single gateway base URL.
 #[derive(Clone)]
 pub struct UpstreamClient {
@@ -111,6 +113,15 @@ impl UpstreamClient {
     ) -> Result<Bytes, UpstreamError> {
         let (body, _) = self
             .get_bounded("/v2/ohttp-key-signed", max_key_response_bytes)
+            .await?;
+        Ok(body)
+    }
+
+    /// The gateway's anchor rollover chain (#288 decision 0.13): at most
+    /// 16 records of 129 bytes behind a count byte, so 4 KiB bounds it.
+    pub async fn get_anchor_rollover(&self) -> Result<Bytes, UpstreamError> {
+        let (body, _) = self
+            .get_bounded("/v2/ohttp-anchor-rollover", MAX_ANCHOR_ROLLOVER_BYTES)
             .await?;
         Ok(body)
     }
