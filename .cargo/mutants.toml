@@ -29,6 +29,11 @@ exclude_re = [
     # to assert (like init_tracing) — mutating its setup is untestable.
     "src/flame\\.rs:",
 
+    # SignedKeyCache::set keeps an entry only while `expires_at > now`; one
+    # kept at exactly `now` is never served, because get requires
+    # `now < expires_at` (vauchi/private#553).
+    "src/signed_key_cache\\.rs:[0-9]+:[0-9]+: replace > with >= in SignedKeyCache::set$",
+
     # Time-boundary equivalents: `< ttl` vs `<= ttl` (and `< max_age` vs `<=`)
     # differ only when the elapsed duration EXACTLY equals the bound, which a
     # live monotonic clock never yields. A real boundary test needs an
