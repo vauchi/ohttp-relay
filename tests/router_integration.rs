@@ -361,12 +361,11 @@ async fn ohttp_forward_accepts_content_length_at_exact_limit() {
     );
 }
 
-// @scenario: router :: key endpoint proxies upstream and returns 502 when unreachable
+/// Clients read only the signed record since core v0.76.1; the unsigned
+/// route is retired (#288 plan 7.5).
+// @internal
 #[tokio::test]
-async fn key_endpoint_attempts_upstream_proxy() {
-    // Port 19998 is deliberately unreachable — we want to confirm that
-    // the /v2/ohttp-key route calls the upstream client (502) rather than
-    // returning 404 or 200 without hitting the upstream path.
+async fn the_unsigned_key_route_is_retired() {
     let state = build_test_state(65536, "http://127.0.0.1:19998");
     let app = build_router(state);
 
@@ -377,159 +376,7 @@ async fn key_endpoint_attempts_upstream_proxy() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_GATEWAY,
-        "key endpoint should return 502 when upstream is unreachable"
-    );
-}
-
-// @scenario: router :: Key-Fingerprint header is forwarded from upstream
-/// Start a mock upstream that returns a Key-Fingerprint header on GET /v2/ohttp-key.
-async fn start_mock_upstream_with_fingerprint(fingerprint: &str) -> u16 {
-    let fp = fingerprint.to_owned();
-    let mock = axum::Router::new().route(
-        "/v2/ohttp-key",
-        axum::routing::get(move || {
-            let fp = fp.clone();
-            async move {
-                let mut resp = (
-                    StatusCode::OK,
-                    [(header::CONTENT_TYPE, "application/ohttp-keys")],
-                    vec![0xAA, 0xBB], // dummy key bytes
-                )
-                    .into_response();
-                resp.headers_mut().insert(
-                    header::HeaderName::from_static("key-fingerprint"),
-                    header::HeaderValue::from_str(&fp).unwrap(),
-                );
-                resp
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        axum::serve(listener, mock).await.unwrap();
-    });
-    port
-}
-
-// @scenario: router :: Key-Fingerprint header value is forwarded to client
-#[tokio::test]
-async fn key_endpoint_forwards_key_fingerprint_header() {
-    let port = start_mock_upstream_with_fingerprint("abc123def456").await;
-    let gateway_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(65536, &gateway_url);
-    let app = build_router(state);
-
-    let req = Request::builder()
-        .method(http::Method::GET)
-        .uri("/v2/ohttp-key")
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "key endpoint should return 200"
-    );
-
-    let fingerprint = resp
-        .headers()
-        .get("key-fingerprint")
-        .expect("response should include Key-Fingerprint header")
-        .to_str()
-        .unwrap();
-    assert_eq!(
-        fingerprint, "abc123def456",
-        "Key-Fingerprint header value should match upstream"
-    );
-}
-
-// @scenario: router :: key endpoint works when upstream omits Key-Fingerprint
-#[tokio::test]
-async fn key_endpoint_works_without_fingerprint_header() {
-    // Mock upstream that does NOT return Key-Fingerprint
-    let mock = axum::Router::new().route(
-        "/v2/ohttp-key",
-        axum::routing::get(|| async {
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/ohttp-keys")],
-                vec![0xCC, 0xDD],
-            )
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        axum::serve(listener, mock).await.unwrap();
-    });
-
-    let gateway_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(65536, &gateway_url);
-    let app = build_router(state);
-
-    let req = Request::builder()
-        .method(http::Method::GET)
-        .uri("/v2/ohttp-key")
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "key endpoint should return 200"
-    );
-    assert!(
-        resp.headers().get("key-fingerprint").is_none(),
-        "Key-Fingerprint header should not be present when upstream omits it"
-    );
-}
-
-// @scenario: router :: oversized upstream key response is rejected with 502
-#[tokio::test]
-async fn key_endpoint_rejects_oversized_upstream_response() {
-    // Mock upstream returning a key body larger than our limit
-    let oversized_body = vec![0xAA; 200]; // 200 bytes, limit will be 50
-    let mock = axum::Router::new().route(
-        "/v2/ohttp-key",
-        axum::routing::get(move || {
-            let body = oversized_body.clone();
-            async move {
-                (
-                    StatusCode::OK,
-                    [(header::CONTENT_TYPE, "application/ohttp-keys")],
-                    body,
-                )
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        axum::serve(listener, mock).await.unwrap();
-    });
-
-    let gateway_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state_with_limits(65536, 131072, 50, &gateway_url);
-    let app = build_router(state);
-
-    let req = Request::builder()
-        .method(http::Method::GET)
-        .uri("/v2/ohttp-key")
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_GATEWAY,
-        "oversized key response from upstream should result in 502"
-    );
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // @scenario: router :: oversized upstream OHTTP response is rejected with 502
@@ -619,18 +466,21 @@ async fn ohttp_forward_accepts_upstream_response_at_exact_limit() {
 }
 
 // @internal
-// Boundary: upstream key response at exact limit must succeed.
+// Boundary: an upstream signed record at exactly the key limit must succeed.
 #[tokio::test]
 async fn key_endpoint_accepts_upstream_response_at_exact_limit() {
     let exact_body = vec![0xAA; 50]; // exactly at limit
     let mock = axum::Router::new().route(
-        "/v2/ohttp-key",
+        "/v2/ohttp-key-signed",
         axum::routing::get(move || {
             let body = exact_body.clone();
             async move {
                 (
                     StatusCode::OK,
-                    [(header::CONTENT_TYPE, "application/ohttp-keys")],
+                    [(
+                        header::CONTENT_TYPE,
+                        "application/vnd.vauchi.ohttp-key-signed",
+                    )],
                     body,
                 )
             }
@@ -648,7 +498,7 @@ async fn key_endpoint_accepts_upstream_response_at_exact_limit() {
 
     let req = Request::builder()
         .method(http::Method::GET)
-        .uri("/v2/ohttp-key")
+        .uri("/v2/ohttp-key-signed")
         .body(Body::empty())
         .unwrap();
 

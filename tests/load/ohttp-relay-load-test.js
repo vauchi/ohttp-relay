@@ -89,8 +89,8 @@ export default function () {
         r.headers["Content-Type"] === "message/ohttp-res",
     });
   } else if (roll < 0.9) {
-    // GET /v2/ohttp-key — fetch OHTTP key
-    const res = http.get(`${RELAY_URL}/v2/ohttp-key`, {
+    // GET /v2/ohttp-key-signed — fetch the signed OHTTP key record
+    const res = http.get(`${RELAY_URL}/v2/ohttp-key-signed`, {
       tags: { endpoint: "ohttp-key" },
     });
 
@@ -99,7 +99,7 @@ export default function () {
     check(res, {
       "Key fetch returns 200": (r) => r.status === 200,
       "Key response has correct content-type": (r) =>
-        r.headers["Content-Type"] === "application/ohttp-keys",
+        r.headers["Content-Type"] === "application/vnd.vauchi.ohttp-key-signed",
     });
   } else {
     // GET /health

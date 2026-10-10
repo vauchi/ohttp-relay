@@ -4,7 +4,7 @@
 
 """Minimal mock gateway for OHTTP relay load testing.
 
-Returns dummy responses for POST /v2/ohttp and GET /v2/ohttp-key.
+Returns dummy responses for POST /v2/ohttp and GET /v2/ohttp-key-signed.
 No real OHTTP decryption — just echoes back opaque bytes.
 """
 
@@ -27,12 +27,11 @@ class MockGateway(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_GET(self):
-        if self.path == "/v2/ohttp-key":
-            # Return a dummy OHTTP key config (32 random-looking bytes)
+        if self.path == "/v2/ohttp-key-signed":
+            # A dummy signed key record (the relay passes it through unread)
             key_body = bytes(range(32))
             self.send_response(200)
-            self.send_header("Content-Type", "application/ohttp-keys")
-            self.send_header("Key-Fingerprint", "mock-fingerprint-abc123")
+            self.send_header("Content-Type", "application/vnd.vauchi.ohttp-key-signed")
             self.send_header("Content-Length", str(len(key_body)))
             self.end_headers()
             self.wfile.write(key_body)
