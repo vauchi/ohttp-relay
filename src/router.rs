@@ -6,7 +6,6 @@
 //!
 //! Production endpoints:
 //! - `POST /v2/ohttp`     — forward encrypted OHTTP blob to upstream gateway
-//! - `GET  /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway
 //! - `GET  /v2/ohttp-key-signed` — proxy the gateway's signed key record
 //! - `GET  /v2/ohttp-anchor-rollover` — proxy the gateway's anchor rollover chain
 //! - `GET  /health`       — local health check (no upstream call)
@@ -40,7 +39,6 @@ use tokio::{
 };
 
 use crate::config::RelayConfig;
-use crate::key_cache::KeyConfigCache;
 use crate::rate_limit::RateLimiter;
 use crate::request::RequestContext;
 use crate::signed_key_cache::SignedKeyCache;
@@ -53,8 +51,6 @@ pub struct AppState {
     pub upstream: UpstreamClient,
     /// Per-IP rate limiter for the OHTTP forward endpoint. `None` if disabled.
     pub rate_limiter: Option<Arc<RateLimiter>>,
-    /// TTL cache for upstream OHTTP key config. `None` if disabled (TTL = 0).
-    pub key_cache: Option<Arc<KeyConfigCache>>,
     /// Window-bounded cache for the signed key record. `None` if disabled.
     pub signed_key_cache: Option<Arc<SignedKeyCache>>,
     /// E2E-only one-shot opaque-forward controller. Absent from production builds.
@@ -122,7 +118,6 @@ pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/health", get(handle_health))
         .route("/v2/ohttp", post(handle_ohttp_forward))
-        .route("/v2/ohttp-key", get(handle_ohttp_key))
         .route("/v2/ohttp-key-signed", get(handle_ohttp_key_signed))
         .route(
             "/v2/ohttp-anchor-rollover",
@@ -281,45 +276,6 @@ async fn handle_e2e_reorder_status(State(state): State<AppState>) -> (StatusCode
     (StatusCode::OK, status)
 }
 
-/// `GET /v2/ohttp-key` — proxy the OHTTP key from the upstream gateway.
-///
-/// Clients need the gateway's public key to construct OHTTP requests.
-/// This endpoint solves the key bootstrap problem without exposing the
-/// gateway address to clients.
-///
-/// Responses are cached with a configurable TTL to avoid a thundering herd
-/// on the upstream during mass client bootstrap.
-#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.key")]
-async fn handle_ohttp_key(State(state): State<AppState>) -> Response {
-    if let Some(ref cache) = state.key_cache
-        && let Some((body, fingerprint)) = cache.get()
-    {
-        return build_key_response(body, fingerprint);
-    }
-
-    debug!(
-        gateway_url = %state.config.gateway_url,
-        "fetching OHTTP key from upstream gateway"
-    );
-
-    match state
-        .upstream
-        .get_ohttp_key(state.config.max_key_response_bytes)
-        .await
-    {
-        Ok(key_resp) => {
-            if let Some(ref cache) = state.key_cache {
-                cache.set(key_resp.body.clone(), key_resp.key_fingerprint.clone());
-            }
-            build_key_response(key_resp.body, key_resp.key_fingerprint)
-        }
-        Err(e) => {
-            warn!(error = %e, "upstream gateway error on key fetch");
-            StatusCode::BAD_GATEWAY.into_response()
-        }
-    }
-}
-
 /// `GET /v2/ohttp-key-signed` — proxy the gateway's signed key record
 /// (#288). Clients verify it; the relay only bounds its cache by the window
 /// it signs. A 503 ("no signed key yet") passes through so clients can tell
@@ -386,22 +342,4 @@ async fn handle_ohttp_anchor_rollover(State(state): State<AppState>) -> Response
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
-}
-
-/// Build a `200 OK` response with the OHTTP key config body and optional fingerprint.
-fn build_key_response(body: Bytes, fingerprint: Option<String>) -> Response {
-    let mut response = (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/ohttp-keys")],
-        body,
-    )
-        .into_response();
-    if let Some(fp) = fingerprint
-        && let Ok(value) = header::HeaderValue::from_str(&fp)
-    {
-        response
-            .headers_mut()
-            .insert(header::HeaderName::from_static("key-fingerprint"), value);
-    }
-    response
 }

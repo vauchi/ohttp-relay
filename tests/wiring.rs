@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use vauchi_ohttp_relay::key_cache::KeyConfigCache;
 use vauchi_ohttp_relay::rate_limit::RateLimiter;
+use vauchi_ohttp_relay::signed_key_cache::SignedKeyCache;
 
 // @internal
 #[tokio::test]
@@ -19,7 +19,7 @@ async fn a_zero_rate_disables_the_limiter_and_any_other_rate_enables_it() {
 
 // @internal
 #[test]
-fn a_zero_ttl_disables_the_key_cache_and_any_other_ttl_enables_it() {
-    assert!(KeyConfigCache::if_enabled(Duration::ZERO).is_none());
-    assert!(KeyConfigCache::if_enabled(Duration::from_secs(60)).is_some());
+fn a_zero_ttl_disables_the_signed_key_cache_and_any_other_ttl_enables_it() {
+    assert!(SignedKeyCache::if_enabled(Duration::ZERO).is_none());
+    assert!(SignedKeyCache::if_enabled(Duration::from_secs(60)).is_some());
 }

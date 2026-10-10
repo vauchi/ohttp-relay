@@ -20,7 +20,6 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 use vauchi_ohttp_relay::config::RelayConfig;
-use vauchi_ohttp_relay::key_cache::KeyConfigCache;
 use vauchi_ohttp_relay::rate_limit::RateLimiter;
 #[cfg(feature = "e2e-faults")]
 use vauchi_ohttp_relay::router::E2eFaultController;
@@ -49,7 +48,6 @@ async fn main() {
 
     let rate_limiter =
         RateLimiter::spawn_if_enabled(config.rate_limit_per_sec, config.rate_limit_max_buckets);
-    let key_cache = KeyConfigCache::if_enabled(config.key_cache_ttl);
     let signed_key_cache = SignedKeyCache::if_enabled(config.key_cache_ttl);
     let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
 
@@ -57,7 +55,6 @@ async fn main() {
         config: config.clone(),
         upstream,
         rate_limiter,
-        key_cache,
         signed_key_cache,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: Some(Arc::new(E2eFaultController::new())),

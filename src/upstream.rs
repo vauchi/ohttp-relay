@@ -85,52 +85,24 @@ impl UpstreamClient {
         .map_err(|e| UpstreamError::Request(e.to_string()))?
     }
 
-    /// Fetch the OHTTP key from the gateway's `GET /v2/ohttp-key`.
-    ///
-    /// No client-derived data is included in this request.
-    /// Returns the key body and, if present, the `Key-Fingerprint` header value.
-    ///
-    /// `max_key_response_bytes` limits key config reads (typically ~100 bytes,
-    /// default limit 4 KiB).
-    pub async fn get_ohttp_key(
-        &self,
-        max_key_response_bytes: usize,
-    ) -> Result<OhttpKeyResponse, UpstreamError> {
-        let (body, key_fingerprint) = self
-            .get_bounded("/v2/ohttp-key", max_key_response_bytes)
-            .await?;
-        Ok(OhttpKeyResponse {
-            body,
-            key_fingerprint,
-        })
-    }
-
-    /// Fetch the gateway's signed key record (#288). Like the key, it carries
-    /// no client-derived data and is bounded by `max_key_response_bytes`.
+    /// Fetch the gateway's signed key record (#288). It carries no
+    /// client-derived data and is bounded by `max_key_response_bytes`.
     pub async fn get_signed_key(
         &self,
         max_key_response_bytes: usize,
     ) -> Result<Bytes, UpstreamError> {
-        let (body, _) = self
-            .get_bounded("/v2/ohttp-key-signed", max_key_response_bytes)
-            .await?;
-        Ok(body)
+        self.get_bounded("/v2/ohttp-key-signed", max_key_response_bytes)
+            .await
     }
 
     /// The gateway's anchor rollover chain (#288 decision 0.13): at most
     /// 16 records of 129 bytes behind a count byte, so 4 KiB bounds it.
     pub async fn get_anchor_rollover(&self) -> Result<Bytes, UpstreamError> {
-        let (body, _) = self
-            .get_bounded("/v2/ohttp-anchor-rollover", MAX_ANCHOR_ROLLOVER_BYTES)
-            .await?;
-        Ok(body)
+        self.get_bounded("/v2/ohttp-anchor-rollover", MAX_ANCHOR_ROLLOVER_BYTES)
+            .await
     }
 
-    async fn get_bounded(
-        &self,
-        path: &str,
-        max_bytes: usize,
-    ) -> Result<(Bytes, Option<String>), UpstreamError> {
+    async fn get_bounded(&self, path: &str, max_bytes: usize) -> Result<Bytes, UpstreamError> {
         let url = format!("{}{path}", self.gateway_url);
 
         let agent = self.agent.clone();
@@ -145,14 +117,7 @@ impl UpstreamClient {
                 return Err(UpstreamError::Status(status));
             }
 
-            let key_fingerprint = response
-                .headers()
-                .get("Key-Fingerprint")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_owned());
-
-            let body = read_bounded_response(response, max_bytes)?;
-            Ok((body, key_fingerprint))
+            read_bounded_response(response, max_bytes)
         })
         .await
         .map_err(|e| UpstreamError::Request(e.to_string()))?
@@ -209,14 +174,6 @@ fn read_bounded_body<R: Read>(mut reader: R, max_bytes: usize) -> Result<Bytes, 
     }
 
     Ok(Bytes::from(buf))
-}
-
-/// Response from `get_ohttp_key` containing the key body and optional fingerprint header.
-pub struct OhttpKeyResponse {
-    /// The raw OHTTP key configuration bytes.
-    pub body: Bytes,
-    /// The `Key-Fingerprint` header value, if the upstream included it.
-    pub key_fingerprint: Option<String>,
 }
 
 /// Errors from upstream gateway calls.

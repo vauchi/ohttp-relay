@@ -57,7 +57,8 @@ pub struct RelayConfig {
     /// configured `client_ip_header`. Used to select the correct IP from the
     /// right end of comma-separated lists like `X-Forwarded-For`. Default: 0.
     pub client_ip_header_trusted_proxies: usize,
-    /// TTL for caching upstream `/v2/ohttp-key` responses.
+    /// TTL for caching the upstream signed key record (`/v2/ohttp-key-signed`);
+    /// the window it signs bounds it too.
     /// Prevents thunder herd when many clients bootstrap simultaneously.
     /// Set to 0 to disable caching. Default: 300 seconds (5 minutes).
     pub key_cache_ttl: Duration,
