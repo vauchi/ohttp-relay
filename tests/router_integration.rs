@@ -645,6 +645,8 @@ fn ip_config_with_proxies(header: Option<&str>, trusted_proxies: usize) -> Relay
         client_ip_header: header.map(str::to_owned),
         client_ip_header_trusted_proxies: trusted_proxies,
         key_cache_ttl: Duration::ZERO,
+        forward_delay_max: Duration::ZERO,
+        pending_budget_bytes: 0,
     }
 }
 

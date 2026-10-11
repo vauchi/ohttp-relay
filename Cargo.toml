@@ -33,6 +33,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
 url = "2"
+# The forwarding delay must be unpredictable (#628); already in the tree via rustls.
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys"] }
 async-trait = "0.1"
 
 tracing = "0.1"

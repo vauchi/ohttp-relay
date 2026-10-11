@@ -107,16 +107,13 @@ async fn collect(app: &axum::Router, ticket: &str) -> (StatusCode, Vec<u8>) {
     (status, body)
 }
 
-/// Lets a forward whose delay has elapsed finish: the upstream call runs on
-/// the blocking pool, outside the paused clock.
+/// Waits until `bytes` of answers are held. The forward runs on the
+/// blocking pool, outside the paused clock, so the store's completion signal
+/// is awaited rather than a timer.
 async fn until_held(store: &DelayedForwarding, bytes: usize) {
-    for _ in 0..500 {
-        if store.held_bytes() >= bytes {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    while store.held_bytes() < bytes {
+        store.answer_held().await;
     }
-    panic!("the answer was never held");
 }
 
 // @internal
@@ -183,7 +180,6 @@ async fn a_malformed_or_missing_ticket_is_refused() {
         );
     }
     assert_eq!(collect(&app, "not-hex").await.0, StatusCode::BAD_REQUEST);
-    tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(gateway.forwards.load(Ordering::SeqCst), 0);
 }
 
@@ -236,18 +232,12 @@ async fn an_answer_nobody_collects_expires_after_twice_the_maximum_delay() {
 #[tokio::test(start_paused = true)]
 async fn a_gateway_failure_is_collected_as_bad_gateway() {
     let gateway = gateway(StatusCode::INTERNAL_SERVER_ERROR).await;
-    let (app, _) = app(&gateway, DelayPolicy::Fixed(Duration::ZERO), 1 << 20);
+    let (app, store) = app(&gateway, DelayPolicy::Fixed(Duration::ZERO), 1 << 20);
     assert_eq!(post(&app, Some(TICKET)).await, StatusCode::ACCEPTED);
 
-    for _ in 0..500 {
-        let (status, _) = collect(&app, TICKET).await;
-        if status != StatusCode::ACCEPTED {
-            assert_eq!(status, StatusCode::BAD_GATEWAY);
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the failure was never collected");
+    store.answer_held().await;
+
+    assert_eq!(collect(&app, TICKET).await.0, StatusCode::BAD_GATEWAY);
 }
 
 // @internal

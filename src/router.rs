@@ -39,6 +39,7 @@ use tokio::{
 };
 
 use crate::config::RelayConfig;
+use crate::delayed::{Admission, Collected, DelayedForwarding, Ticket};
 use crate::rate_limit::RateLimiter;
 use crate::request::RequestContext;
 use crate::signed_key_cache::SignedKeyCache;
@@ -53,6 +54,9 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
     /// Window-bounded cache for the signed key record. `None` if disabled.
     pub signed_key_cache: Option<Arc<SignedKeyCache>>,
+    /// Ticketed requests forwarded after a random delay (#628). `None`
+    /// leaves the asynchronous routes unanswered (404).
+    pub delayed: Option<Arc<DelayedForwarding>>,
     /// E2E-only one-shot opaque-forward controller. Absent from production builds.
     #[cfg(feature = "e2e-faults")]
     pub e2e_fault_controller: Option<Arc<E2eFaultController>>,
@@ -118,6 +122,8 @@ pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/health", get(handle_health))
         .route("/v2/ohttp", post(handle_ohttp_forward))
+        .route("/v2/ohttp-async", post(handle_ohttp_async_post))
+        .route("/v2/ohttp-async/:ticket", get(handle_ohttp_async_collect))
         .route("/v2/ohttp-key-signed", get(handle_ohttp_key_signed))
         .route(
             "/v2/ohttp-anchor-rollover",
@@ -220,6 +226,75 @@ async fn handle_ohttp_forward(State(state): State<AppState>, context: RequestCon
     }
 
     first_response
+}
+
+/// Header carrying the client-chosen ticket of an asynchronous request.
+const TICKET_HEADER: &str = "vauchi-ticket";
+
+/// `POST /v2/ohttp-async` — accept a ticketed request, forward it after a
+/// random delay and hold the answer for collection (#628).
+async fn handle_ohttp_async_post(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    context: RequestContext,
+) -> Response {
+    let Some(delayed) = state.delayed.clone() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(ticket) = headers
+        .get(TICKET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(Ticket::parse)
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match delayed.admit(ticket) {
+        Admission::Duplicate => return StatusCode::CONFLICT.into_response(),
+        Admission::Full => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Admission::Accepted => {}
+    }
+    let body = context.into_body();
+    let delay = delayed.policy().sample();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let (status, answer) = match state
+            .upstream
+            .post_ohttp(body, state.config.max_response_bytes)
+            .await
+        {
+            Ok(answer) => (StatusCode::OK, answer),
+            Err(e) => {
+                warn!(error = %e, "upstream gateway error on delayed OHTTP forward");
+                (StatusCode::BAD_GATEWAY, Bytes::new())
+            }
+        };
+        delayed.complete(ticket, status, answer);
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
+/// `GET /v2/ohttp-async/{ticket}` — hand over a held answer once.
+async fn handle_ohttp_async_collect(
+    State(state): State<AppState>,
+    axum::extract::Path(ticket): axum::extract::Path<String>,
+) -> Response {
+    let Some(delayed) = state.delayed.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(ticket) = Ticket::parse(&ticket) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match delayed.collect(ticket) {
+        Collected::Ready { status, body } if status == StatusCode::OK => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "message/ohttp-res")],
+            body,
+        )
+            .into_response(),
+        Collected::Ready { status, .. } => status.into_response(),
+        Collected::Pending => (StatusCode::ACCEPTED, [(header::RETRY_AFTER, "60")]).into_response(),
+        Collected::Unknown => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn forward_ohttp_request(state: &AppState, body: Bytes) -> Response {

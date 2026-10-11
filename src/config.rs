@@ -62,6 +62,12 @@ pub struct RelayConfig {
     /// Prevents thunder herd when many clients bootstrap simultaneously.
     /// Set to 0 to disable caching. Default: 300 seconds (5 minutes).
     pub key_cache_ttl: Duration,
+    /// Longest random delay before a ticketed request is forwarded (#628).
+    /// Default: 900 s, from the #602/#628 simulation.
+    pub forward_delay_max: Duration,
+    /// Bytes of held answers above which new ticketed requests are refused.
+    /// Default: 64 MiB.
+    pub pending_budget_bytes: usize,
 }
 
 impl RelayConfig {
@@ -106,6 +112,9 @@ impl RelayConfig {
             parse_usize(vars, "OHTTP_RELAY_CLIENT_IP_HEADER_TRUSTED_PROXIES", "0")?;
 
         let key_cache_ttl_secs = parse_u64(vars, "OHTTP_RELAY_KEY_CACHE_TTL_SECS", "300")?;
+        let forward_delay_max_secs = parse_u64(vars, "OHTTP_RELAY_FORWARD_DELAY_MAX_SECS", "900")?;
+        let pending_budget_bytes =
+            parse_usize(vars, "OHTTP_RELAY_PENDING_BUDGET_BYTES", "67108864")?;
         Ok(RelayConfig {
             listen_addr,
             gateway_url,
@@ -118,6 +127,8 @@ impl RelayConfig {
             client_ip_header,
             client_ip_header_trusted_proxies,
             key_cache_ttl: Duration::from_secs(key_cache_ttl_secs),
+            forward_delay_max: Duration::from_secs(forward_delay_max_secs),
+            pending_budget_bytes,
         })
     }
 }

@@ -29,6 +29,8 @@ pub fn test_config(gateway_url: &str) -> RelayConfig {
         client_ip_header: None,
         client_ip_header_trusted_proxies: 0,
         key_cache_ttl: Duration::ZERO,
+        forward_delay_max: Duration::ZERO,
+        pending_budget_bytes: 0,
     }
 }
 
@@ -47,6 +49,7 @@ pub fn build_test_state(max_request_bytes: usize, gateway_url: &str) -> AppState
         upstream,
         rate_limiter: None,
         signed_key_cache: None,
+        delayed: None,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }
@@ -71,6 +74,7 @@ pub fn build_test_state_with_limits(
         upstream,
         rate_limiter: None,
         signed_key_cache: None,
+        delayed: None,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }
@@ -89,6 +93,7 @@ pub fn build_test_state_with_rate_limit(gateway_url: &str, rate_limit_per_sec: u
         upstream,
         rate_limiter,
         signed_key_cache: None,
+        delayed: None,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }
@@ -109,6 +114,7 @@ pub fn build_test_state_with_signed_key_cache(
         signed_key_cache: Some(Arc::new(
             crate::signed_key_cache::SignedKeyCache::with_clock(ttl, clock),
         )),
+        delayed: None,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: None,
     }
@@ -173,4 +179,19 @@ pub mod test_client {
                 .expect("test request should succeed")
         }
     }
+}
+
+/// Build an `AppState` that forwards ticketed requests after a delay drawn
+/// from `policy`, holding at most `budget_bytes` of answers (#628).
+pub fn build_test_state_with_delayed_forwarding(
+    gateway_url: &str,
+    policy: crate::delayed::DelayPolicy,
+    budget_bytes: usize,
+) -> AppState {
+    let mut state = build_test_state(65_536, gateway_url);
+    state.delayed = Some(std::sync::Arc::new(crate::delayed::DelayedForwarding::new(
+        policy,
+        budget_bytes,
+    )));
+    state
 }

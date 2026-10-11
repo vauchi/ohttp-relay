@@ -14,12 +14,12 @@
 //!
 //! All configuration is via environment variables. See `config::RelayConfig`.
 
-#[cfg(feature = "e2e-faults")]
 use std::sync::Arc;
 
 use tracing::{error, info};
 
 use vauchi_ohttp_relay::config::RelayConfig;
+use vauchi_ohttp_relay::delayed::{DelayPolicy, DelayedForwarding};
 use vauchi_ohttp_relay::rate_limit::RateLimiter;
 #[cfg(feature = "e2e-faults")]
 use vauchi_ohttp_relay::router::E2eFaultController;
@@ -50,12 +50,19 @@ async fn main() {
         RateLimiter::spawn_if_enabled(config.rate_limit_per_sec, config.rate_limit_max_buckets);
     let signed_key_cache = SignedKeyCache::if_enabled(config.key_cache_ttl);
     let upstream = UpstreamClient::new(&config.gateway_url, config.request_timeout);
+    let delayed = Some(Arc::new(DelayedForwarding::new(
+        DelayPolicy::Uniform {
+            max: config.forward_delay_max,
+        },
+        config.pending_budget_bytes,
+    )));
 
     let state = AppState {
         config: config.clone(),
         upstream,
         rate_limiter,
         signed_key_cache,
+        delayed,
         #[cfg(feature = "e2e-faults")]
         e2e_fault_controller: Some(Arc::new(E2eFaultController::new())),
     };

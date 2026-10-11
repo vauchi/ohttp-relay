@@ -21,6 +21,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod delayed;
 #[cfg(feature = "flame")]
 pub mod flame;
 pub mod rate_limit;

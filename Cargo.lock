@@ -970,6 +970,7 @@ name = "vauchi-ohttp-relay"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "http-body-util",
  "hyper",
