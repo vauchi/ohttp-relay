@@ -233,6 +233,7 @@ const TICKET_HEADER: &str = "vauchi-ticket";
 
 /// `POST /v2/ohttp-async` — accept a ticketed request, forward it after a
 /// random delay and hold the answer for collection (#628).
+#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.async_post")]
 async fn handle_ohttp_async_post(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -255,8 +256,13 @@ async fn handle_ohttp_async_post(
     }
     let body = context.into_body();
     let delay = delayed.policy().sample();
+    debug!(
+        body_len = body.len(),
+        "holding ticketed OHTTP request for a delayed forward"
+    );
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
+        debug!("forwarding delayed OHTTP request to upstream gateway");
         let (status, answer) = match state
             .upstream
             .post_ohttp(body, state.config.max_response_bytes)
@@ -274,6 +280,7 @@ async fn handle_ohttp_async_post(
 }
 
 /// `GET /v2/ohttp-async/{ticket}` — hand over a held answer once.
+#[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.async_collect")]
 async fn handle_ohttp_async_collect(
     State(state): State<AppState>,
     axum::extract::Path(ticket): axum::extract::Path<String>,
@@ -284,7 +291,16 @@ async fn handle_ohttp_async_collect(
     let Some(ticket) = Ticket::parse(&ticket) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    match delayed.collect(ticket) {
+    let collected = delayed.collect(ticket);
+    debug!(
+        outcome = match &collected {
+            Collected::Ready { .. } => "ready",
+            Collected::Pending => "pending",
+            Collected::Unknown => "unknown",
+        },
+        "ticketed OHTTP answer collected"
+    );
+    match collected {
         Collected::Ready { status, body } if status == StatusCode::OK => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "message/ohttp-res")],
