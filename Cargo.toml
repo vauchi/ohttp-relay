@@ -51,6 +51,11 @@ tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
+name = "delayed_forward"
+path = "tests/delayed_forward.rs"
+required-features = ["test-utils"]
+
+[[test]]
 name = "router_integration"
 path = "tests/router_integration.rs"
 required-features = ["test-utils"]
