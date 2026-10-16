@@ -264,3 +264,67 @@ fn a_uniform_delay_stays_within_its_window_and_varies() {
         "{below_half} of 2000 below W/2"
     );
 }
+
+/// The `Vauchi-Ohttp-Delay-Window` header of a synchronous `POST /v2/ohttp`.
+async fn advertised_window(app: &axum::Router) -> Option<String> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v2/ohttp")
+                .header(header::CONTENT_TYPE, "message/ohttp-req")
+                .body(Body::from(vec![0x42; 64]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    response
+        .headers()
+        .get("vauchi-ohttp-delay-window")
+        .map(|value| value.to_str().unwrap().to_string())
+}
+
+// The D-F6 amendment (2026-10-16): with no relay directory yet, the outer
+// relay advertises its delayed path on every synchronous answer.
+// @internal
+#[tokio::test]
+async fn a_synchronous_answer_advertises_the_delay_window_in_seconds() {
+    let gateway = gateway(StatusCode::OK).await;
+    let (app, _) = app(&gateway, DelayPolicy::Uniform { max: DELAY }, 1 << 20);
+
+    assert_eq!(advertised_window(&app).await.as_deref(), Some("600"));
+}
+
+// @internal
+#[tokio::test]
+async fn a_failed_forward_still_advertises_the_window() {
+    let gateway = gateway(StatusCode::INTERNAL_SERVER_ERROR).await;
+    let (app, _) = app(&gateway, DelayPolicy::Uniform { max: DELAY }, 1 << 20);
+
+    assert_eq!(advertised_window(&app).await.as_deref(), Some("600"));
+}
+
+// @internal
+#[tokio::test]
+async fn a_window_under_a_second_rounds_up_and_a_zero_window_is_not_advertised() {
+    let gateway = gateway(StatusCode::OK).await;
+    let (subsecond, _) = app(
+        &gateway,
+        DelayPolicy::Fixed(Duration::from_millis(1_500)),
+        1 << 20,
+    );
+    let (zero, _) = app(&gateway, DelayPolicy::Fixed(Duration::ZERO), 1 << 20);
+
+    assert_eq!(advertised_window(&subsecond).await.as_deref(), Some("2"));
+    assert_eq!(advertised_window(&zero).await, None);
+}
+
+// @internal
+#[tokio::test]
+async fn without_delayed_forwarding_no_window_is_advertised() {
+    let gateway = gateway(StatusCode::OK).await;
+    let app = build_router(build_test_state(65_536, &gateway.url));
+
+    assert_eq!(advertised_window(&app).await, None);
+}
