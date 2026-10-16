@@ -26,7 +26,7 @@ use axum::{
     Router,
     body::Bytes,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -155,12 +155,37 @@ async fn handle_health() -> impl IntoResponse {
 ///
 /// The raw request body is forwarded verbatim. No headers from the client are
 /// passed upstream. The response body from the gateway is returned verbatim
-/// to the client with no identifying headers added.
+/// to the client with no identifying headers added; the only header added is
+/// the delay window, the same for every client.
 ///
 /// Rate-limited per source IP when a rate limiter is configured. The IP is
 /// used only for rate limiting — it is never logged or forwarded.
 #[tracing::instrument(level = "debug", skip_all, name = "ohttp_relay.forward")]
 async fn handle_ohttp_forward(State(state): State<AppState>, context: RequestContext) -> Response {
+    let window = advertised_delay_window(&state);
+    let mut response = forward_synchronously(state, context).await;
+    if let Some(window) = window {
+        response
+            .headers_mut()
+            .insert(DELAY_WINDOW_HEADER, HeaderValue::from(window));
+    }
+    response
+}
+
+/// Advertises the delayed path (design D-F6, amended 2026-10-16): no relay
+/// directory exists yet, so clients learn W from the synchronous answers
+/// every sync already receives.
+const DELAY_WINDOW_HEADER: &str = "vauchi-ohttp-delay-window";
+
+/// W in whole seconds, rounded up; none without delayed forwarding or with
+/// a zero window.
+fn advertised_delay_window(state: &AppState) -> Option<u64> {
+    let max = state.delayed.as_ref()?.policy().max();
+    let seconds = max.as_secs() + u64::from(max.subsec_nanos() > 0);
+    (seconds > 0).then_some(seconds)
+}
+
+async fn forward_synchronously(state: AppState, context: RequestContext) -> Response {
     let body = context.into_body();
 
     debug!(
