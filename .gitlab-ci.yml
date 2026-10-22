@@ -481,16 +481,19 @@ publish:package:ohttp-relay:
       upload_package() {
         local version="$1"
         local base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${version}"
-        curl -fsSL --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        curl -sSL --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
           --upload-file "${BINARY_NAME}" "${base}/${BINARY_NAME}"
-        curl -fsSL --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        curl -sSL --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
           --upload-file "${BINARY_NAME}.sha256" "${base}/${BINARY_NAME}.sha256"
         echo "✅ Published ${PACKAGE_NAME}@${version}"
       }
 
-      upload_package "${CI_COMMIT_SHA}"
+      # A release tag sits on a main commit whose pipeline already published
+      # it by SHA, and the group refuses duplicate packages with a 400.
       if [ -n "${CI_COMMIT_TAG:-}" ]; then
         upload_package "${CI_COMMIT_TAG}"
+      else
+        upload_package "${CI_COMMIT_SHA}"
       fi
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
