@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Mattia Egloff <mattia.egloff@pm.me>
 #
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
 [package]
 name = "vauchi-ohttp-relay"
 version = "0.2.0"
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 description = "Minimal OHTTP forwarding proxy for Vauchi relay"
 
 [features]
