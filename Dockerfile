@@ -16,9 +16,9 @@ ARG HUB=docker.io/library
 # this job was spending. Deriving planner and builder from one prepared
 # base also installs cargo-chef once instead of twice.
 # Pin cargo-chef so the planner binary is reproducible and not affected by a
-# compromised future release.
+# compromised future release; --locked extends that to its dependencies.
 FROM ${HUB}/rust:1.93-trixie AS chef
-RUN cargo install cargo-chef --version 0.1.77
+RUN cargo install cargo-chef --version 0.1.77 --locked
 WORKDIR /app
 
 # Planner stage: generate recipe.json for dependency caching
