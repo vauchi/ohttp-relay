@@ -16,7 +16,7 @@
 # Shared templates
 include:
   - project: 'vauchi/scripts'
-    ref: ci-templates-v2026.10.08
+    ref: ci-templates-v2026.11.08
     file:
       - '/ci-templates/rust-base.yml'
       - '/ci-templates/security.yml'
@@ -307,6 +307,11 @@ security:audit:
 
 security:deny:
   extends: [.rust-runner-readonly, .security-deny-job]
+
+# deny.toml's git sources match the reviewed list in vauchi/scripts
+# policy/allowed-git-sources.txt (vauchi/private#1162).
+check:allow-git:
+  extends: [.allow-git-drift-job]
 
 security:vet:
   extends: [.rust-runner-readonly, .security-vet-job]
