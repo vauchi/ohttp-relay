@@ -56,7 +56,7 @@ RUN set -eux; \
 # Runtime stage — distroless glibc without unused OpenSSL libraries.
 # Pinned by digest to prevent supply-chain drift from `latest` tag re-pointing.
 # pin-tracks: gcr.io/distroless/base-nossl-debian13:latest
-FROM gcr.io/distroless/base-nossl-debian13@sha256:ca1c7e6a875e59345ae6ff182a1e0930f0ca1ffef23a9b830f8823ab348ad5dd
+FROM gcr.io/distroless/base-nossl-debian13@sha256:d710a5c8bfe4cf7e726d7e1afd73e363a9fb02c2a11ad893d2d6185c1b9a89cb
 
 # Rust binaries (and the C code in aws-lc-rs) still need libgcc_s for panic
 # unwinding. base-nossl omits it; staged arch-agnostically in the builder above.
